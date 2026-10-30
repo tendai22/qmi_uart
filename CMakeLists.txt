@@ -49,11 +49,19 @@ pico_enable_stdio_usb(qmi_usrt 0)
 
 # Add the standard library to the build
 target_link_libraries(qmi_usrt
-        pico_stdlib)
+        pico_stdlib
+        hardware_uart
+        hardware_clocks
+        hardware_flash
+)
 
 # Add the standard include files to the build
 target_include_directories(qmi_usrt PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
+)
+# link option
+target_link_options(qmi_usrt PRIVATE
+    "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/qmi_usrt.map"
 )
 
 pico_add_extra_outputs(qmi_usrt)
