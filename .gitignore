@@ -1,0 +1,9 @@
+/.vscode/*
+# Pico/Pico2のビルド出力ディレクトリを除外
+/build/
+/.bloop/
+/.metals/
+
+# OSが生成する一時ファイル
+.DS_Store
+Thumbs.db
