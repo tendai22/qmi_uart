@@ -35,7 +35,7 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(qmi_usrt qmi_usrt.c )
+add_executable(qmi_usrt qmi_usrt.c cmd.c qmi_flash.c)
 
 pico_set_program_name(qmi_usrt "qmi_usrt")
 pico_set_program_version(qmi_usrt "0.1")
