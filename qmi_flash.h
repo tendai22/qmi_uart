@@ -23,7 +23,7 @@ extern bool qmi_flash_erase_4k_start(uint32_t address);
 extern qmi_flash_poll_result_t qmi_flash_erase_poll(void);
 
 // Program
-extern bool qmi_flash_program_page_start(uint32_t address, const uint8_t *buffer, size_t length);
+extern bool qmi_flash_program_start(uint32_t address, const uint8_t *buffer, size_t length);
 qmi_flash_poll_result_t qmi_flash_program_poll(void);
 
 // 既存の同期 API を残す場合

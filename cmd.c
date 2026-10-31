@@ -282,7 +282,7 @@ static void command_write(const char *arg, int async_flag) {
     time0 = time_us_64();
     for (offset = 0; offset < SECTOR_SIZE; offset += PAGE_SIZE) {
         if (async_flag) {
-            if (!qmi_flash_program_page_start(address + offset, &flash_buffer[offset], PAGE_SIZE)) {
+            if (!qmi_flash_program_start(address + offset, &flash_buffer[offset], PAGE_SIZE)) {
                 printf("Write start failed\n");
                 return;
             }
@@ -297,7 +297,7 @@ static void command_write(const char *arg, int async_flag) {
                     return;
                 }
                 time1 = time_us_64();
-                printf("time1: %8lld\n", time1 - time0);
+                //printf("time1: %8lld\n", time1 - time0);
                     tight_loop_contents();
             }
             time2 = time_us_64();
