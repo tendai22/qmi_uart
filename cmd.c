@@ -2,18 +2,18 @@
 // cmd.c ... simple command processor
 //
 
-
-#include <stdio.h>
-#include <stdint.h>
+#include <ctype.h>
 #include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
 
+#include "pico/stdlib.h"
 #include "hardware/uart.h"
 
-#include "conf.h"
 #include "cmd.h"
+#include "conf.h"
 
 // ------------------------------------------------------------
 // QMI Flash functions
@@ -46,8 +46,7 @@ static uint8_t flash_buffer[SECTOR_SIZE];
 // Utility functions
 // ------------------------------------------------------------
 
-static bool parse_hex(const char *str, uint32_t *value)
-{
+static bool parse_hex(const char *str, uint32_t *value) {
     char *end;
     unsigned long v;
 
@@ -63,13 +62,11 @@ static bool parse_hex(const char *str, uint32_t *value)
     return true;
 }
 
-static bool check_flash_address(uint32_t address)
-{
+static bool check_flash_address(uint32_t address) {
     return address < FLASH_SIZE;
 }
 
-static void print_error(const char *message)
-{
+static void print_error(const char *message) {
     printf("ERROR: %s\n", message);
 }
 
@@ -83,8 +80,7 @@ static void print_error(const char *message)
 // Help
 // ------------------------------------------------------------
 
-static void command_help(void)
-{
+static void command_help(void) {
     printf("\n");
     printf("Commands:\n");
     printf("  r ADDRESS       Read 4 KiB sector into buffer\n");
@@ -110,8 +106,7 @@ static void command_help(void)
 
 static uint32_t base_offset = FLASH_SIZE - USER_FLASH_SIZE;
 
-static bool parse_user_address(const char *arg, uint32_t *address)
-{
+static bool parse_user_address(const char *arg, uint32_t *address) {
     uint32_t offset;
 
     if (arg == NULL) {
@@ -133,11 +128,11 @@ static bool parse_user_address(const char *arg, uint32_t *address)
     return true;
 }
 
-static void command_read(const char *arg)
-{
+static void command_read(const char *arg, int async_flag) {
     uint32_t address;
     const char *start = arg;
     int absolute_flag = false;
+    uint64_t time0, time1, time2;
 
     if (arg == NULL) {
         print_error("Bad arg pointer");
@@ -164,11 +159,35 @@ static void command_read(const char *arg)
 
     printf("Reading Flash 0x%08lX ...\n", (unsigned long)address);
 
-    if (!qmi_flash_read(address, flash_buffer, SECTOR_SIZE)) {
-        print_error("Flash read failed");
-        return;
-    }
+    time0 = time_us_64();
+    if (async_flag) {
+        if (!qmi_flash_read_start(address, flash_buffer, SECTOR_SIZE)) {
+            printf("Read start failed\n");
+            return;
+        }
+        time1 = time_us_64();
 
+        while (true) {
+            qmi_flash_poll_result_t result = qmi_flash_read_poll();
+            if (result == QMI_FLASH_POLL_DONE)
+                break;
+            if (result == QMI_FLASH_POLL_ERROR) {
+                printf("Read failed\n");
+                return;
+            }
+            tight_loop_contents();
+        }
+        time2 = time_us_64();
+        printf("time1: %8lld\n", time1 - time0);
+        printf("time2: %8lld\n", time2 - time0);
+    } else {
+        if (!qmi_flash_read(address, flash_buffer, SECTOR_SIZE)) {
+            print_error("Flash read failed");
+            return;
+        }
+        time2 = time_us_64();
+        printf("time2: %8lld\n", time2 - time0);
+    }
     printf("Read completed.\n");
 }
 
@@ -176,15 +195,15 @@ static void command_read(const char *arg)
 // Erase
 // ------------------------------------------------------------
 
-static void command_erase(const char *arg)
-{
+static void command_erase(const char *arg, int async_flag) {
     uint32_t address;
+    uint64_t time0, time1, time2;
 
     if (!parse_hex(arg, &address)) {
         print_error("Invalid address");
         return;
     }
-    
+
     address += base_offset;
 
     if ((address & (SECTOR_SIZE - 1)) != 0) {
@@ -199,11 +218,38 @@ static void command_erase(const char *arg)
 
     printf("Erasing sector at 0x%08lX ...\n", (unsigned long)address);
 
-    if (!qmi_flash_erase_4k(address)) {
-        print_error("Flash erase failed");
-        return;
-    }
+    time0 = time_us_64();
+    if (async_flag) {
+        if (!qmi_flash_erase_4k_start(address)) {
+            printf("Erase start failed\n");
+            return;
+        }
+        time1 = time_us_64();
+        while (true) {
+            qmi_flash_poll_result_t result = qmi_flash_erase_poll();
 
+            if (result == QMI_FLASH_POLL_DONE)
+                break;
+
+            if (result == QMI_FLASH_POLL_ERROR) {
+                printf("Erase failed or timed out\n");
+                return;
+            }
+
+            tight_loop_contents();
+        }
+        time2 = time_us_64();
+        printf("time1: %8lld\n", time1 - time0);
+        printf("time2: %8lld\n", time2 - time0);
+
+    } else {
+        if (!qmi_flash_erase_4k(address)) {
+            print_error("Flash erase failed");
+            return;
+        }
+        time2 = time_us_64();
+        printf("time1: %8lld\n", time1 - time0);
+    }
     printf("Erase completed.\n");
 }
 
@@ -211,10 +257,10 @@ static void command_erase(const char *arg)
 // Write
 // ------------------------------------------------------------
 
-static void command_write(const char *arg)
-{
+static void command_write(const char *arg, int async_flag) {
     uint32_t address;
     uint32_t offset;
+    uint64_t time0, time1, time2;
 
     if (!parse_hex(arg, &address)) {
         print_error("Invalid address");
@@ -233,11 +279,36 @@ static void command_write(const char *arg)
     }
     printf("Writing buffer to Flash 0x%08lX ...\n", (unsigned long)address);
     // Page Program must not cross a 256-byte page boundary.
+    time0 = time_us_64();
     for (offset = 0; offset < SECTOR_SIZE; offset += PAGE_SIZE) {
+        if (async_flag) {
+            if (!qmi_flash_program_page_start(address + offset, &flash_buffer[offset], PAGE_SIZE)) {
+                printf("Write start failed\n");
+                return;
+            }
+            while (true) {
+                qmi_flash_poll_result_t result = qmi_flash_program_poll();
 
-        if (!qmi_flash_program_page(address + offset, &flash_buffer[offset], PAGE_SIZE)) {
-            printf("Program failed at 0x%08lX\n", (unsigned long)(address + offset));
-            return;
+                if (result == QMI_FLASH_POLL_DONE)
+                    break;
+
+                if (result == QMI_FLASH_POLL_ERROR) {
+                    printf("Write failed or timed out\n");
+                    return;
+                }
+                time1 = time_us_64();
+                printf("time1: %8lld\n", time1 - time0);
+                    tight_loop_contents();
+            }
+            time2 = time_us_64();
+            printf("time2: %8lld\n", time2 - time0);
+        } else {
+            if (!qmi_flash_program_page(address + offset, &flash_buffer[offset], PAGE_SIZE)) {
+                printf("Write failed at 0x%08lX\n", (unsigned long)(address + offset));
+                return;
+            }
+            time2 = time_us_64();
+            printf("time2: %8lld\n", time2 - time0);
         }
     }
     printf("Write completed.\n");
@@ -247,12 +318,13 @@ static void command_write(const char *arg)
 // Dump
 // ------------------------------------------------------------
 
-static void command_dump(const char *arg_offset, const char *arg_length)
-{
+static void command_dump(const char *arg_offset, const char *arg_length) {
     uint32_t offset = 0;
     uint32_t length = 256;
     uint32_t i;
+    static uint32_t next_address = 0;
 
+    offset = next_address;
     if (arg_offset != NULL) {
         if (!parse_hex(arg_offset, &offset)) {
             print_error("Invalid offset");
@@ -287,14 +359,14 @@ static void command_dump(const char *arg_offset, const char *arg_length)
         }
         printf("\n");
     }
+    next_address = offset + length;
 }
 
 // ------------------------------------------------------------
 // Fill
 // ------------------------------------------------------------
 
-static void command_fill(const char *arg)
-{
+static void command_fill(const char *arg) {
     uint32_t value;
 
     if (!parse_hex(arg, &value) || value > 0xFF) {
@@ -309,8 +381,7 @@ static void command_fill(const char *arg)
 // Set one byte
 // ------------------------------------------------------------
 
-static void command_set(const char *arg_offset, const char *arg_value)
-{
+static void command_set(const char *arg_offset, const char *arg_value) {
     uint32_t offset;
     uint32_t value;
 
@@ -334,10 +405,12 @@ static void command_set(const char *arg_offset, const char *arg_value)
 // Command interpreter
 // ------------------------------------------------------------
 
-static void execute_command(char *line)
-{
+static void execute_command(char *line) {
     char *argv[4];
     int argc = 0;
+    int async_mode = 1;
+
+    printf("start: async_mode: %d\n", async_mode);
 
     char *token = strtok(line, " \t");
 
@@ -354,51 +427,42 @@ static void execute_command(char *line)
             print_error("Usage: r ADDRESS");
             return;
         }
-        command_read(argv[1]);
-    }
-    else if (strcmp(argv[0], "e") == 0) {
+        command_read(argv[1], async_mode);
+    } else if (strcmp(argv[0], "e") == 0) {
         if (argc != 2) {
             print_error("Usage: e ADDRESS");
             return;
         }
-        command_erase(argv[1]);
-    }
-    else if (strcmp(argv[0], "w") == 0) {
+        command_erase(argv[1], async_mode);
+    } else if (strcmp(argv[0], "w") == 0) {
         if (argc != 2) {
             print_error("Usage: w ADDRESS");
             return;
         }
-        command_write(argv[1]);
-    }
-    else if (strcmp(argv[0], "d") == 0) {
+        command_write(argv[1], async_mode);
+    } else if (strcmp(argv[0], "d") == 0) {
+        uint32_t addr = 0, len = 256;
         if (argc > 3) {
             print_error("Usage: d [OFFSET [LENGTH]]");
             return;
         }
-        command_dump(
-            argc >= 2 ? argv[1] : NULL,
-            argc >= 3 ? argv[2] : NULL
-        );
-    }
-    else if (strcmp(argv[0], "f") == 0) {
+        command_dump(argc >= 2 ? argv[1] : NULL, argc >= 3 ? argv[2] : NULL);
+    } else if (strcmp(argv[0], "f") == 0) {
         if (argc != 2) {
             print_error("Usage: f VALUE");
             return;
         }
         command_fill(argv[1]);
-    }
-    else if (strcmp(argv[0], "s") == 0) {
+    } else if (strcmp(argv[0], "s") == 0) {
         if (argc != 3) {
             print_error("Usage: s OFFSET VALUE");
             return;
         }
         command_set(argv[1], argv[2]);
-    }
-    else if (strcmp(argv[0], "h") == 0 ||
-             strcmp(argv[0], "?") == 0) {
+    } else if (strcmp(argv[0], "h") == 0 ||
+               strcmp(argv[0], "?") == 0) {
         command_help();
-    }
-    else {
+    } else {
         print_error("Unknown command");
     }
 }
@@ -407,8 +471,7 @@ static void execute_command(char *line)
 // UART line input
 // ------------------------------------------------------------
 
-void command_loop(void)
-{
+void command_loop(void) {
     char line[LINE_SIZE];
     size_t length;
 

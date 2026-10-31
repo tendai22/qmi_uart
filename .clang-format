@@ -1,0 +1,15 @@
+BasedOnStyle: LLVM
+
+# K&R形式
+BreakBeforeBraces: Attach
+
+# インデント
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+
+# 1行の文字数制限なし
+ColumnLimit: 0
+
+# 短い if 文も複数行にする
+AllowShortIfStatementsOnASingleLine: Never
