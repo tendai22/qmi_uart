@@ -14,6 +14,9 @@
 
 #include "cmd.h"
 #include "conf.h"
+#include "qmi_flash.h"
+#include "qmi_flash_sync.h"
+#include "qmi_flash_async.h"
 
 // ------------------------------------------------------------
 // QMI Flash functions
@@ -161,6 +164,9 @@ static void command_read(const char *arg, int async_flag) {
 
     time0 = time_us_64();
     if (async_flag) {
+        // async mode
+        // use: qmi_flash_read_start
+        //      qmi_flash_read_poll
         if (!qmi_flash_read_start(address, flash_buffer, SECTOR_SIZE)) {
             printf("Read start failed\n");
             return;
@@ -181,6 +187,8 @@ static void command_read(const char *arg, int async_flag) {
         printf("time1: %8lld\n", time1 - time0);
         printf("time2: %8lld\n", time2 - time0);
     } else {
+        // sync mode
+        // use: qmi_flash_read
         if (!qmi_flash_read(address, flash_buffer, SECTOR_SIZE)) {
             print_error("Flash read failed");
             return;
