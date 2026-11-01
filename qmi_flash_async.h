@@ -25,4 +25,6 @@ extern qmi_flash_poll_result_t qmi_flash_erase_poll(void);
 extern bool qmi_flash_program_start(uint32_t address, const uint8_t *buffer, size_t length);
 qmi_flash_poll_result_t qmi_flash_program_poll(void);
 
+// debug support
+bool toggle_debug_error(void);
 

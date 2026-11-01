@@ -14,6 +14,7 @@
 #include "conf.h"
 #include "cmd.h"
 #include "qmi_flash.h"
+#include "memprt.h"
 
 int main(void)
 {
@@ -26,6 +27,7 @@ int main(void)
     gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
 
     uart_puts(UART_ID, "qmi_uart: start!\n");
+    memprt_init(UART_ID);
 
     printf("\n");
 

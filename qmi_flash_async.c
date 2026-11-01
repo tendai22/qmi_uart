@@ -16,9 +16,11 @@
 #include "pico/time.h"
 
 #include "conf.h"
+#include "memprt.h"
 #include "qmi_flash.h"
 #include "qmi_flash_async.h"
 
+#define QMI_DEBUG
 //
 // async stub functions
 //
@@ -50,7 +52,8 @@ qmi_flash_poll_result_t qmi_flash_program_poll(void) {
     return QMI_FLASH_POLL_DONE;
 }
 
-#else //USB_STUB
+#else // USB_STUB
+
 // -----------------------------------------------------------------------------
 // W25Q32RV write commands
 // -----------------------------------------------------------------------------
@@ -58,7 +61,6 @@ qmi_flash_poll_result_t qmi_flash_program_poll(void) {
 //
 // read/erase/program async mode
 //
-
 
 // Read の進行状態
 static uint8_t *read_buffer;
@@ -170,12 +172,12 @@ static const char *program_state_name(program_state_t state) {
 }
 
 #ifdef QMI_DEBUG
-#define PROGRAM_SET_STATE(next)                   \
-    do {                                          \
-        printf("[PROGRAM] %s -> %s\n",            \
-               program_state_name(program.state), \
-               program_state_name(next));         \
-        program.state = (next);                   \
+#define PROGRAM_SET_STATE(next)                  \
+    do {                                         \
+        debug("[PROGRAM] %s -> %s\n",            \
+              program_state_name(program.state), \
+              program_state_name(next));         \
+        program.state = (next);                  \
     } while (0)
 #else
 #define PROGRAM_SET_STATE(next) \
@@ -213,6 +215,25 @@ static void program_debug_error(const char *reason) {
     printf("  direct_rx  = 0x%08lx\n", (unsigned long)qmi_hw->direct_rx);
     printf("  position   = %lu / %lu\n", (unsigned long)program.position, (unsigned long)program.length);
     printf("  SR1        = 0x%02x\n", program.sr1);
+}
+
+//
+// debug_error ... DUMMY_ERROR_OCCUR forses to change the state to ERROR
+//
+bool dummy_error_enable = false;
+
+void DUMMY_ERROR_OCCUR(void) {
+    if (dummy_error_enable) {
+        debug("dummy error occur");
+        PROGRAM_SET_STATE(PROGRAM_STATE_ERROR);
+        debug("[PROGRAM] CS asserted: %s, Direct Mode active: %s\n",
+               program.cs_asserted ? "true" : "false",
+               program.direct_mode_active ? "true" : "false");
+    }
+}
+
+bool toggle_debug_error(void) {
+    return dummy_error_enable = !dummy_error_enable;
 }
 
 //
@@ -283,8 +304,8 @@ qmi_flash_poll_result_t qmi_flash_program_poll(void) {
          */
         if (!qmi_direct_mode_start())
             goto error;
-
         program.direct_mode_active = true;
+
         qmi_hw->direct_csr |= QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
         program.cs_asserted = true;
         PROGRAM_SET_STATE(PROGRAM_STATE_WREN_SEND);
@@ -323,10 +344,13 @@ qmi_flash_poll_result_t qmi_flash_program_poll(void) {
          */
         if (!qmi_direct_mode_start())
             goto error;
+        program.direct_mode_active = true;
 
         qmi_hw->direct_csr |= QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
+        program.cs_asserted = true;
 
         PROGRAM_SET_STATE(PROGRAM_STATE_PP_SEND_CMD);
+        DUMMY_ERROR_OCCUR();
         return QMI_FLASH_POLL_BUSY;
 
     case PROGRAM_STATE_PP_SEND_CMD:
@@ -428,8 +452,10 @@ qmi_flash_poll_result_t qmi_flash_program_poll(void) {
     case PROGRAM_STATE_STATUS_BEGIN:
         if (!qmi_direct_mode_start())
             goto error;
+        program.direct_mode_active = true;
 
         qmi_hw->direct_csr |= QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
+        program.cs_asserted = true;
         PROGRAM_SET_STATE(PROGRAM_STATE_STATUS_SEND_CMD);
         return QMI_FLASH_POLL_BUSY;
 
@@ -681,10 +707,7 @@ bool qmi_flash_erase_4k_start(uint32_t address) {
     if (!qmi_direct_mode_stop())
         return false;
 
-    qmi_flash_set_operation(
-        FLASH_OP_ERASE,
-        FLASH_ERASE_TIMEOUT_US);
-
+    qmi_flash_set_operation(FLASH_OP_ERASE, FLASH_ERASE_TIMEOUT_US);
     return true;
 }
 
@@ -821,4 +844,4 @@ error:
     return QMI_FLASH_POLL_ERROR;
 }
 
-#endif //USE_STUB
+#endif // USE_STUB

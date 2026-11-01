@@ -9,14 +9,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "pico/stdlib.h"
 #include "hardware/uart.h"
+#include "pico/stdlib.h"
 
 #include "cmd.h"
 #include "conf.h"
+#include "memprt.h"
 #include "qmi_flash.h"
-#include "qmi_flash_sync.h"
 #include "qmi_flash_async.h"
+#include "qmi_flash_sync.h"
 
 // ------------------------------------------------------------
 // QMI Flash functions
@@ -93,6 +94,8 @@ static void command_help(void) {
     printf("  f VALUE         Fill buffer with VALUE (00-FF)\n");
     printf("  s OFF VALUE     Set one byte in buffer\n");
     printf("  h               Show this help\n");
+    printf("  x               flush debug out\n");
+    printf("  y               toggle debug_enable\n");
     printf("  ?               Show this help\n");
     printf("\n");
     printf("ADDRESS : 6-digit or 8-digit hexadecimal\n");
@@ -305,8 +308,8 @@ static void command_write(const char *arg, int async_flag) {
                     return;
                 }
                 time1 = time_us_64();
-                //printf("time1: %8lld\n", time1 - time0);
-                    tight_loop_contents();
+                // printf("time1: %8lld\n", time1 - time0);
+                tight_loop_contents();
             }
             time2 = time_us_64();
             printf("time2: %8lld\n", time2 - time0);
@@ -470,6 +473,16 @@ static void execute_command(char *line) {
     } else if (strcmp(argv[0], "h") == 0 ||
                strcmp(argv[0], "?") == 0) {
         command_help();
+    } else if (strcmp(argv[0], "x") == 0) {
+        if (argc == 2) {
+            print_error("clear buffer");
+            memprt_clear();
+        } else {
+            print_error("flush_buffer:");
+            memprt_flush();
+        }
+    } else if (strcmp(argv[0], "y") == 0) {
+        printf("toggle debug_error: %s\n", toggle_debug_error() ? "true" : "false");
     } else {
         print_error("Unknown command");
     }
