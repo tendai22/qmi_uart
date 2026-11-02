@@ -227,14 +227,23 @@ void DUMMY_ERROR_OCCUR(void) {
         debug("dummy error occur");
         PROGRAM_SET_STATE(PROGRAM_STATE_ERROR);
         debug("[PROGRAM] CS asserted: %s, Direct Mode active: %s\n",
-               program.cs_asserted ? "true" : "false",
-               program.direct_mode_active ? "true" : "false");
+              program.cs_asserted ? "true" : "false",
+              program.direct_mode_active ? "true" : "false");
     }
 }
 
 bool toggle_debug_error(void) {
     return dummy_error_enable = !dummy_error_enable;
 }
+
+#define MEASURE_TIME(func) ({ \
+    uint64_t start_time = time_us_64(); \
+    __auto_type result = (func); \
+    uint64_t end_time = time_us_64(); \
+    if (end_time - start_time > 1) \
+    debug("%s: %llu us\n", program_state_name(program.state), (unsigned long long)(end_time - start_time)); \
+    result; \
+})
 
 //
 // program_start
@@ -275,7 +284,7 @@ bool qmi_flash_program_start(
 //
 // qmi_flash_program_poll
 //
-qmi_flash_poll_result_t qmi_flash_program_poll(void) {
+qmi_flash_poll_result_t qmi_flash_program_poll_body(void) {
     if (flash_operation != FLASH_OP_PROGRAM)
         return QMI_FLASH_POLL_ERROR;
 
@@ -350,12 +359,12 @@ qmi_flash_poll_result_t qmi_flash_program_poll(void) {
         program.cs_asserted = true;
 
         PROGRAM_SET_STATE(PROGRAM_STATE_PP_SEND_CMD);
-        DUMMY_ERROR_OCCUR();
         return QMI_FLASH_POLL_BUSY;
 
     case PROGRAM_STATE_PP_SEND_CMD:
-        if (qmi_hw->direct_csr & QMI_DIRECT_CSR_TXFULL_BITS)
+        if (qmi_hw->direct_csr & QMI_DIRECT_CSR_TXFULL_BITS) {
             return QMI_FLASH_POLL_BUSY;
+        }
 
         qmi_hw->direct_tx =
             QMI_DIRECT_TX_NOPUSH_BITS | CMD_PAGE_PROGRAM;
@@ -610,6 +619,11 @@ error:
     PROGRAM_SET_STATE(PROGRAM_STATE_ERROR);
     return QMI_FLASH_POLL_BUSY;
 }
+
+qmi_flash_poll_result_t qmi_flash_program_poll(void) {
+        return MEASURE_TIME(qmi_flash_program_poll_body());
+}
+
 
 #if 0
 // async program issue

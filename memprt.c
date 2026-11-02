@@ -19,7 +19,7 @@
 
 #include "conf.h"   // UART_ID definition here
 
-#define BUFSIZE 0x8000u // 32kB
+#define BUFSIZE 0x10000u // 64kB
 
 static uint8_t buffer[BUFSIZE];
 static uint8_t *current;
