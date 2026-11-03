@@ -18,6 +18,7 @@
 #include "qmi_flash.h"
 #include "qmi_flash_async.h"
 #include "qmi_flash_sync.h"
+#include "support.h"
 
 // ------------------------------------------------------------
 // QMI Flash functions
@@ -96,6 +97,7 @@ static void command_help(void) {
     printf("  h               Show this help\n");
     printf("  x               flush debug out\n");
     printf("  y               toggle debug_enable\n");
+    printf("  c [SEED]        calc CRC-16\n");
     printf("  ?               Show this help\n");
     printf("\n");
     printf("ADDRESS : 6-digit or 8-digit hexadecimal\n");
@@ -380,12 +382,26 @@ static void command_dump(const char *arg_offset, const char *arg_length) {
 static void command_fill(const char *arg) {
     uint32_t value;
 
+    if (arg && arg[0] == 'r') {
+        fill_random(flash_buffer, SECTOR_SIZE, 12345678u);
+        printf("Buffer filled randomly\n");
+        return;
+    }
     if (!parse_hex(arg, &value) || value > 0xFF) {
         print_error("Value must be 00-FF");
         return;
     }
     memset(flash_buffer, (uint8_t)value, SECTOR_SIZE);
     printf("Buffer filled with %02lX.\n", (unsigned long)value);
+}
+
+// ------------------------------------------------------------
+// CRC-16
+// ------------------------------------------------------------
+
+static void command_crc16(const char *seed) {
+    uint16_t crc = crc16_ccitt_false(flash_buffer, SECTOR_SIZE);
+    printf("CRC16: %04x\n", crc);
 }
 
 // ------------------------------------------------------------
@@ -481,6 +497,8 @@ static void execute_command(char *line) {
             print_error("flush_buffer:");
             memprt_flush();
         }
+    } else if (strcmp(argv[0], "c") == 0) {
+        command_crc16(argv[1]);
     } else if (strcmp(argv[0], "y") == 0) {
         printf("toggle debug_error: %s\n", toggle_debug_error() ? "true" : "false");
     } else {
@@ -501,6 +519,7 @@ void command_loop(void) {
 
     printf("\nQMI Flash monitor\n");
     command_help();
+    test_crc16();
 
     while (true) {
 
