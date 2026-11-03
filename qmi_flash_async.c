@@ -505,10 +505,6 @@ qmi_flash_poll_result_t qmi_flash_program_poll_body(void) {
         }
         qmi_hw->direct_tx = 0xFF;
 
-        PROGRAM_SET_STATE(PROGRAM_STATE_STATUS_WAIT_RX);
-        return QMI_FLASH_POLL_BUSY;
-
-    case PROGRAM_STATE_STATUS_WAIT_RX:
         debug_program.direct_csr = qmi_hw->direct_csr;
         if (qmi_flash_wait_rxempty_timeout()) {
             PROGRAM_SET_STATE(PROGRAM_STATE_ERROR);
@@ -522,7 +518,7 @@ qmi_flash_poll_result_t qmi_flash_program_poll_body(void) {
             return QMI_FLASH_POLL_BUSY;
         }
 
-        // CS High (ASSERT_CS0N Low)
+        // CS High (ASSERT_CS0N = Low)
         qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
         program.cs_asserted = false;
 
