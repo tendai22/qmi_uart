@@ -17,6 +17,10 @@
 // Read
 extern bool qmi_flash_read_start(uint32_t address, uint8_t *buffer, size_t length);
 extern qmi_flash_poll_result_t qmi_flash_read_poll(void);
+// Read stable
+extern bool qmi_flash_read_start_stable(uint32_t address, uint8_t *buffer, size_t length);
+extern qmi_flash_poll_result_t qmi_flash_read_poll_stable(void);
+
 // Erase
 extern bool qmi_flash_erase_4k_start(uint32_t address);
 extern qmi_flash_poll_result_t qmi_flash_erase_poll(void);

@@ -255,6 +255,7 @@ void qmi_init(void) {
     if (qmi_clkdiv > 256u) {
         qmi_clkdiv = 256u;
     }
+    flash_start_xip();
 #if defined(USE_STUB)
     qmi_stub_init();
 #endif

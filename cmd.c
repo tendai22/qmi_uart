@@ -136,7 +136,7 @@ static bool parse_user_address(const char *arg, uint32_t *address) {
     return true;
 }
 
-static void command_read(const char *arg, int async_flag) {
+static void command_read(const char *arg, int stable_flag) {
     uint32_t address;
     const char *start = arg;
     int absolute_flag = false;
@@ -168,10 +168,33 @@ static void command_read(const char *arg, int async_flag) {
     printf("Reading Flash 0x%08lX ...\n", (unsigned long)address);
 
     time0 = time_us_64();
-    if (async_flag) {
-        // async mode
-        // use: qmi_flash_read_start
-        //      qmi_flash_read_poll
+    if (stable_flag) {
+        // stable mode
+        // use: qmi_flash_read_start_stable
+        //      qmi_flash_read_poll_stalbe
+        if (!qmi_flash_read_start_stable(address, flash_buffer, SECTOR_SIZE)) {
+            printf("Read start failed\n");
+            return;
+        }
+        time1 = time_us_64();
+
+        while (true) {
+            qmi_flash_poll_result_t result = qmi_flash_read_poll_stable();
+            if (result == QMI_FLASH_POLL_DONE)
+                break;
+            if (result == QMI_FLASH_POLL_ERROR) {
+                printf("Read failed\n");
+                return;
+            }
+            tight_loop_contents();
+        }
+        time2 = time_us_64();
+        printf("time1: %8lld\n", time1 - time0);
+        printf("time2: %8lld\n", time2 - time0);
+    } else {
+        // stable mode
+        // use: qmi_flash_read_start_stable
+        //      qmi_flash_read_poll_stalbe
         if (!qmi_flash_read_start(address, flash_buffer, SECTOR_SIZE)) {
             printf("Read start failed\n");
             return;
@@ -190,15 +213,6 @@ static void command_read(const char *arg, int async_flag) {
         }
         time2 = time_us_64();
         printf("time1: %8lld\n", time1 - time0);
-        printf("time2: %8lld\n", time2 - time0);
-    } else {
-        // sync mode
-        // use: qmi_flash_read
-        if (!qmi_flash_read(address, flash_buffer, SECTOR_SIZE)) {
-            print_error("Flash read failed");
-            return;
-        }
-        time2 = time_us_64();
         printf("time2: %8lld\n", time2 - time0);
     }
     printf("Read completed.\n");
@@ -435,9 +449,6 @@ static void command_set(const char *arg_offset, const char *arg_value) {
 static void execute_command(char *line) {
     char *argv[4];
     int argc = 0;
-    int async_mode = 1;
-
-    printf("start: async_mode: %d\n", async_mode);
 
     char *token = strtok(line, " \t");
 
@@ -454,19 +465,25 @@ static void execute_command(char *line) {
             print_error("Usage: r ADDRESS");
             return;
         }
-        command_read(argv[1], async_mode);
+        command_read(argv[1], false);
+    } else if (strcmp(argv[0], "R") == 0) {
+        if (argc != 2) {
+            print_error("Usage: R ADDRESS");
+            return;
+        }
+        command_read(argv[1], true);
     } else if (strcmp(argv[0], "e") == 0) {
         if (argc != 2) {
             print_error("Usage: e ADDRESS");
             return;
         }
-        command_erase(argv[1], async_mode);
+        command_erase(argv[1], true);
     } else if (strcmp(argv[0], "w") == 0) {
         if (argc != 2) {
             print_error("Usage: w ADDRESS");
             return;
         }
-        command_write(argv[1], async_mode);
+        command_write(argv[1], true);
     } else if (strcmp(argv[0], "d") == 0) {
         uint32_t addr = 0, len = 256;
         if (argc > 3) {

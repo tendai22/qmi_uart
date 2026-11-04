@@ -96,6 +96,9 @@ typedef enum {
     PROGRAM_STATE_PP_WAIT,
     PROGRAM_STATE_PP_WAIT_BYTE,
 
+    // Read
+    PROGRAM_STATE_RD_RECEIVE_DATA,
+
     // Status Register 1
     PROGRAM_STATE_STATUS_BEGIN,
     PROGRAM_STATE_STATUS_SEND_CMD,
@@ -142,6 +145,8 @@ static const char *program_state_name(program_state_t state) {
         return "PP_WAIT";
     case PROGRAM_STATE_PP_WAIT_BYTE:
         return "PP_WAIT_BYTE";
+    case PROGRAM_STATE_RD_RECEIVE_DATA:
+        return "RD_RECEIVE_DATA";
     case PROGRAM_STATE_STATUS_BEGIN:
         return "STATUS_BEGIN";
     case PROGRAM_STATE_STATUS_SEND_CMD:
@@ -241,7 +246,7 @@ bool toggle_debug_error(void) {
     __auto_type result = (func);                                                                                                                   \
     uint64_t delta = time_us_64() - start_time;                                                                                                    \
     if (delta > 1)                                                                                                                                 \
-        if (program.state == PROGRAM_STATE_PP_SEND_DATA)                                                                                           \
+        if (program.state == PROGRAM_STATE_PP_SEND_DATA || program.state == PROGRAM_STATE_RD_RECEIVE_DATA)                                         \
             debug("%s: %llu us count = %ld\n", program_state_name(program.state), (unsigned long long)(delta), (unsigned long)(program.position)); \
         else                                                                                                                                       \
             debug("%s: %llu us\n", program_state_name(program.state), (unsigned long long)(delta));                                                \
@@ -281,7 +286,13 @@ bool qmi_flash_wait_rxempty_timeout(void) {
 //
 // program_start
 //
+#define TIME_CHECK(str)                                 \
+    debug("%s: %ld us\n", (str), time_us_32() - time0); \
+    time0 = time_us_32();
+
 bool qmi_flash_program_start(uint32_t address, const uint8_t *buffer, size_t length) {
+    uint32_t time0 = time_us_32();
+
     if (buffer == NULL || length == 0)
         return false;
 
@@ -290,7 +301,6 @@ bool qmi_flash_program_start(uint32_t address, const uint8_t *buffer, size_t len
 
     if (flash_operation != FLASH_OP_NONE)
         return false;
-
     // 1ページを超えないことを確認
     if ((address / PAGE_SIZE) !=
         ((address + length - 1) / PAGE_SIZE))
@@ -307,7 +317,6 @@ bool qmi_flash_program_start(uint32_t address, const uint8_t *buffer, size_t len
 
     qmi_flash_set_operation(FLASH_OP_PROGRAM, FLASH_PROGRAM_TIMEOUT_US);
     PROGRAM_SET_STATE(PROGRAM_STATE_WREN_BEGIN);
-
     return true;
 }
 
@@ -760,7 +769,8 @@ qmi_flash_poll_result_t qmi_flash_erase_poll(void) {
 // qmi_flash_read_start
 //
 
-bool qmi_flash_read_start(uint32_t address, uint8_t *buffer, size_t length) {
+bool qmi_flash_read_start_body(uint32_t address, uint8_t *buffer, size_t length) {
+    uint32_t time0 = time_us_32();
     if (buffer == NULL || length == 0)
         return false;
 
@@ -770,14 +780,253 @@ bool qmi_flash_read_start(uint32_t address, uint8_t *buffer, size_t length) {
     if (flash_operation != FLASH_OP_NONE)
         return false;
 
-    flash_start_xip();
+    TIME_CHECK("1");
+    // start time
+    flash_operation_start_us = time_us_32();
+
+    //flash_start_xip();
+    TIME_CHECK("2");
+    if (!qmi_direct_mode_start())
+        return false;
+    TIME_CHECK("3");
+
+    // 残留 RX データを破棄
+    // 残留 RX データを破棄
+    while ((qmi_hw->direct_csr & QMI_DIRECT_CSR_RXEMPTY_BITS) == 0) {
+        (void)qmi_hw->direct_rx;
+    }
+    TIME_CHECK("4");
+
+    qmi_hw->direct_csr |= QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
+
+    // Read Data: 03h + 24-bit address
+    if (!qmi_flash_write_byte(CMD_READ_DATA) ||
+        !qmi_flash_write_byte((uint8_t)(address >> 16)) ||
+        !qmi_flash_write_byte((uint8_t)(address >> 8)) ||
+        !qmi_flash_write_byte((uint8_t)address)) {
+        (void)qmi_wait_not_busy();
+        TIME_CHECK("6");
+        qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
+        (void)qmi_direct_mode_stop();
+        TIME_CHECK("7");
+        return false;
+    }
+
+    // 最初のデータ受信用クロックを発生させる
+    TIME_CHECK("5");
+    if (!qmi_wait_tx_ready()) {
+        qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
+        (void)qmi_direct_mode_stop();
+        return false;
+    }
+    TIME_CHECK("6");
+
+    qmi_hw->direct_tx = 0xFF;
+
+    program.address = address;
+    program.buffer = buffer;
+    program.length = length;
+    program.position = 0;
+    program.direct_mode_active = false;
+    program.cs_asserted = false;
+    TIME_CHECK("7");
+
+    qmi_flash_set_operation(FLASH_OP_READ, FLASH_PROGRAM_TIMEOUT_US);
+
+    // flash_operation = FLASH_OP_READ;
+    program.state = PROGRAM_STATE_STATUS_BEGIN;
+    PROGRAM_SET_STATE(PROGRAM_STATE_RD_RECEIVE_DATA);
+    TIME_CHECK("8");
+    return true;
+}
+
+bool qmi_flash_read_start(uint32_t address, uint8_t *buffer, size_t length) {
+    uint64_t start_time = time_us_64();
+    bool result = qmi_flash_read_start_body(address, buffer, length);
+    uint64_t delta = time_us_64() - start_time;
+    if (delta > 1) {
+        debug("%s: %llu us\n", "program_start", (unsigned long long)(delta));
+    }
+    return result;
+}
+
+//
+// qmi_start_read_poll
+//
+qmi_flash_poll_result_t qmi_flash_read_poll_body(void) {
+    if (flash_operation != FLASH_OP_READ)
+        return QMI_FLASH_POLL_ERROR;
+
+    if (program.state != PROGRAM_STATE_ERROR &&
+        program.state != PROGRAM_STATE_ERROR_WAIT &&
+        program.state != PROGRAM_STATE_ERROR_END &&
+        program.state != PROGRAM_STATE_ERROR_FATAL) {
+        // 通常タイムアウト処理。エラー復旧処理中には適用しない。
+        uint32_t elapsed_us = (uint32_t)(time_us_32() - flash_operation_start_us);
+
+        if (elapsed_us >= flash_operation_timeout_us) {
+            printf("[READ] TIMEOUT: elapsed=%lu us, limit=%lu us\n",
+                   (unsigned long)elapsed_us,
+                   (unsigned long)flash_operation_timeout_us);
+            PROGRAM_SET_STATE(PROGRAM_STATE_ERROR);
+        }
+    }
+
+    switch (program.state) {
+    case PROGRAM_STATE_RD_RECEIVE_DATA:
+        // 受信開始
+        for (int rest = 8; rest > 0 && program.position < program.length; rest--) {
+            // 受信 FIFO にデータがなければ、まだ処理中
+            if (qmi_flash_wait_rxempty_timeout()) {
+                PROGRAM_SET_STATE(PROGRAM_STATE_ERROR);
+                return QMI_FLASH_POLL_BUSY;
+            }
+            // データ到着
+            read_buffer[program.position++] = (uint8_t)qmi_hw->direct_rx;
+            if (program.position < program.length) {
+                if (qmi_flash_wait_tx_timeout()) {
+                    PROGRAM_SET_STATE(PROGRAM_STATE_ERROR);
+                    return QMI_FLASH_POLL_BUSY;
+                }
+                qmi_hw->direct_tx = 0xFF;
+            }
+        }
+
+        if (program.position < program.length) {
+            // 受信データはまだ残っている。状態を維持しながら戻る。
+            return QMI_FLASH_POLL_BUSY;
+        }
+
+        // 最後のデータ受信後、転送完了を待って CS を解除
+        if (qmi_flash_wait_csrbusy_timeout()) {
+            PROGRAM_SET_STATE(PROGRAM_STATE_ERROR);
+            return QMI_FLASH_POLL_BUSY;
+        }
+
+        qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
+        program.cs_asserted = false;
+
+        if (!qmi_direct_mode_stop())
+            goto error;
+        program.direct_mode_active = false;
+
+        PROGRAM_SET_STATE(PROGRAM_STATE_DONE);
+        return QMI_FLASH_POLL_BUSY;
+
+    case PROGRAM_STATE_DONE:
+        flash_operation = FLASH_OP_NONE;
+        PROGRAM_SET_STATE(PROGRAM_STATE_IDLE);
+        return QMI_FLASH_POLL_DONE;
+
+    case PROGRAM_STATE_ERROR:
+        /*
+         * エラー復旧開始。
+         * ここではまだCSやDirect Modeを操作しない。
+         */
+        program.error_start_us = time_us_32();
+
+        PROGRAM_SET_STATE(PROGRAM_STATE_ERROR_WAIT);
+        return QMI_FLASH_POLL_BUSY;
+
+    case PROGRAM_STATE_ERROR_WAIT:
+        /*
+         * QMIの転送完了を待つ。
+         */
+        if (qmi_hw->direct_csr & QMI_DIRECT_CSR_BUSY_BITS) {
+            uint32_t elapsed_us = (uint32_t)(time_us_32() - program.error_start_us);
+
+            if (elapsed_us >= PROGRAM_ERROR_RECOVERY_TIMEOUT_US) {
+                program_debug_error("Recovery timeout");
+                PROGRAM_SET_STATE(PROGRAM_STATE_ERROR_FATAL);
+                return QMI_FLASH_POLL_ERROR;
+            }
+            return QMI_FLASH_POLL_BUSY;
+        }
+        PROGRAM_SET_STATE(PROGRAM_STATE_ERROR_END);
+        return QMI_FLASH_POLL_BUSY;
+
+    case PROGRAM_STATE_ERROR_END:
+        /*
+         * QMI BUSY解除後にCSをHighにする。
+         */
+        if (program.cs_asserted) {
+            qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
+            program.cs_asserted = false;
+        }
+
+        /*
+         * Direct Modeを終了する。
+         */
+        if (program.direct_mode_active) {
+            if (!qmi_direct_mode_stop()) {
+                program_debug_error("Direct Mode stop failed");
+                PROGRAM_SET_STATE(PROGRAM_STATE_ERROR_FATAL);
+                return QMI_FLASH_POLL_ERROR;
+            }
+            program.direct_mode_active = false;
+        }
+
+        /*
+         * 復旧完了。
+         */
+        flash_operation = FLASH_OP_NONE;
+
+        PROGRAM_SET_STATE(PROGRAM_STATE_IDLE);
+        return QMI_FLASH_POLL_ERROR;
+
+    case PROGRAM_STATE_ERROR_FATAL:
+        /*
+         * ハードウェア状態を安全に復旧できなかった。
+         * 次のFlash操作を許可しない。
+         */
+        return QMI_FLASH_POLL_ERROR;
+    default:
+        goto error;
+    }
+
+error:
+    /*
+     * エラー処理も本来はQMI BUSY状態を確認してから
+     * CS解除・Direct Mode終了する必要がある。
+     * ここでは概略のみ。
+     */
+    program_debug_error("QMI operation failed");
+    PROGRAM_SET_STATE(PROGRAM_STATE_ERROR);
+    return QMI_FLASH_POLL_BUSY;
+    // error:
+    //     (void)qmi_wait_not_busy();
+    //     qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
+    //     (void)qmi_direct_mode_stop();
+
+    //    flash_operation = FLASH_OP_NONE;
+    //    return QMI_FLASH_POLL_ERROR;
+}
+
+qmi_flash_poll_result_t qmi_flash_read_poll(void) {
+    return MEASURE_TIME(qmi_flash_read_poll_body());
+}
+//
+// qmi_flash_read_start_stable
+//
+bool qmi_flash_read_start_stable(uint32_t address, uint8_t *buffer, size_t length) {
+    if (buffer == NULL || length == 0)
+        return false;
+
+    if (!qmi_flash_check_range(address, length))
+        return false;
+
+    if (flash_operation != FLASH_OP_NONE)
+        return false;
+
+    //flash_start_xip();
 
     if (!qmi_direct_mode_start())
         return false;
 
     // 残留 RX データを破棄
-    while ((qmi_hw->direct_csr & QMI_DIRECT_CSR_RXEMPTY_BITS) == 0)
+    while ((qmi_hw->direct_csr & QMI_DIRECT_CSR_RXEMPTY_BITS) == 0) {
         (void)qmi_hw->direct_rx;
+    }
 
     qmi_hw->direct_csr |= QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
 
@@ -811,9 +1060,9 @@ bool qmi_flash_read_start(uint32_t address, uint8_t *buffer, size_t length) {
 }
 
 //
-// qmi_start_read_poll
+// qmi_start_read_poll_stable
 //
-qmi_flash_poll_result_t qmi_flash_read_poll(void) {
+qmi_flash_poll_result_t qmi_flash_read_poll_stable(void) {
     if (flash_operation != FLASH_OP_READ)
         return QMI_FLASH_POLL_ERROR;
 
