@@ -169,6 +169,7 @@ static void command_read(const char *arg, int stable_flag) {
 
     time0 = time_us_64();
     if (stable_flag) {
+#if 1
         // stable mode
         // use: qmi_flash_read_start_stable
         //      qmi_flash_read_poll_stalbe
@@ -190,7 +191,10 @@ static void command_read(const char *arg, int stable_flag) {
         }
         time2 = time_us_64();
         printf("time1: %8lld\n", time1 - time0);
-        printf("time2: %8lld\n", time2 - time0);
+        printf("time2: %8lld\n", time2 - time1);
+#else
+        printf("read stable not supported");
+#endif
     } else {
         // stable mode
         // use: qmi_flash_read_start_stable
@@ -213,7 +217,7 @@ static void command_read(const char *arg, int stable_flag) {
         }
         time2 = time_us_64();
         printf("time1: %8lld\n", time1 - time0);
-        printf("time2: %8lld\n", time2 - time0);
+        printf("time2: %8lld\n", time2 - time1);
     }
     printf("Read completed.\n");
 }
@@ -313,6 +317,7 @@ static void command_write(const char *arg, int async_flag) {
                 printf("Write start failed\n");
                 return;
             }
+            time1 = time_us_64();
             while (true) {
                 qmi_flash_poll_result_t result = qmi_flash_program_poll();
 
@@ -323,12 +328,11 @@ static void command_write(const char *arg, int async_flag) {
                     printf("Write failed or timed out\n");
                     return;
                 }
-                time1 = time_us_64();
                 // printf("time1: %8lld\n", time1 - time0);
                 tight_loop_contents();
             }
             time2 = time_us_64();
-            printf("time2: %8lld\n", time2 - time0);
+            printf("time2: %8lld\n", time2 - time1);
         } else {
             if (!qmi_flash_program_page(address + offset, &flash_buffer[offset], PAGE_SIZE)) {
                 printf("Write failed at 0x%08lX\n", (unsigned long)(address + offset));
