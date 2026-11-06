@@ -16,6 +16,7 @@
 #include "pico/time.h"
 
 #include "conf.h"
+#include "memprt.h"
 #include "qmi_flash.h"
 
 #if defined(USE_STUB)
@@ -29,8 +30,6 @@ flash_operation_t flash_operation = FLASH_OP_NONE;
 
 uint32_t flash_operation_start_us;
 uint32_t flash_operation_timeout_us;
-
-
 
 // -----------------------------------------------------------------------------
 // QMI Direct Mode
@@ -76,22 +75,26 @@ extern void qmi_dump_registers(const char *label) {
 // -----------------------------------------------------------------------------
 
 extern bool qmi_wait_not_busy(void) {
+    uint32_t time0 = time_us_32();
     for (uint32_t i = 0; i < QMI_TIMEOUT_COUNT; ++i) {
         if ((qmi_hw->direct_csr & QMI_DIRECT_CSR_BUSY_BITS) == 0) {
             return true;
         }
         tight_loop_contents();
     }
+    debug("not_busy timeout: %ld\n", (unsigned long)(time_us_32() - time0));
     return false;
 }
 
 extern bool qmi_wait_tx_ready(void) {
+    uint32_t time0 = time_us_32();
     for (uint32_t i = 0; i < QMI_TIMEOUT_COUNT; ++i) {
         if ((qmi_hw->direct_csr & QMI_DIRECT_CSR_TXFULL_BITS) == 0) {
             return true;
         }
         tight_loop_contents();
     }
+    debug("tx_ready timeout: %ld\n", (unsigned long)(time_us_32() - time0));
     return false;
 }
 
@@ -236,7 +239,6 @@ extern bool qmi_wait_busy_clear(void) {
     }
     return true;
 }
-
 
 //
 // qmi_init

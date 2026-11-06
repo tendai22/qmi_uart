@@ -42,7 +42,7 @@ pico_set_program_name(qmi_usrt "qmi_usrt")
 pico_set_program_version(qmi_usrt "0.1")
 
 # no_flash means the target is to run from RAM
-pico_set_binary_type(qmi_usrt no_flash)
+pico_set_binary_type(qmi_usrt copy_to_ram)
 
 # Modify the below lines to enable/disable output over UART/USB
 pico_enable_stdio_uart(qmi_usrt 1)
