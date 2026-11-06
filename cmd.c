@@ -257,7 +257,7 @@ static void command_erase(const char *arg, int async_flag) {
         }
         time1 = time_us_64();
         while (true) {
-            qmi_flash_poll_result_t result = qmi_flash_erase_poll();
+            qmi_flash_poll_result_t result = qmi_flash_erase_4k_poll();
 
             if (result == QMI_FLASH_POLL_DONE)
                 break;
@@ -482,6 +482,12 @@ static void execute_command(char *line) {
             return;
         }
         command_erase(argv[1], true);
+    } else if (strcmp(argv[0], "E") == 0) {
+        if (argc != 2) {
+            print_error("Usage: e ADDRESS");
+            return;
+        }
+        command_erase(argv[1], false);
     } else if (strcmp(argv[0], "w") == 0) {
         if (argc != 2) {
             print_error("Usage: w ADDRESS");

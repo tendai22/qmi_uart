@@ -17,6 +17,9 @@
 
 #include "conf.h"
 #include "memprt.h"
+
+#define QMI_DEBUG
+
 #include "qmi_flash.h"
 
 #if defined(USE_STUB)
@@ -146,6 +149,7 @@ extern bool qmi_direct_mode_stop(void) {
 // -----------------------------------------------------------------------------
 
 extern bool qmi_flash_read_register(uint8_t command, uint8_t *buffer, size_t length) {
+    uint32_t time0 = time_us_32();
     if (buffer == NULL || length == 0) {
         return false;
     }
@@ -181,7 +185,6 @@ extern bool qmi_flash_read_register(uint8_t command, uint8_t *buffer, size_t len
     if ((qmi_hw->direct_csr & QMI_DIRECT_CSR_ASSERT_CS0N_BITS) == 0) {
         goto error;
     }
-
     // コマンド送信
     if (!qmi_wait_tx_ready()) {
         goto error;
@@ -193,7 +196,6 @@ extern bool qmi_flash_read_register(uint8_t command, uint8_t *buffer, size_t len
     if (!qmi_wait_not_busy()) {
         goto error;
     }
-
     if (diag_index < 4) {
         qmi_diag[diag_index].csr_command_done = qmi_hw->direct_csr;
     }
@@ -203,7 +205,6 @@ extern bool qmi_flash_read_register(uint8_t command, uint8_t *buffer, size_t len
         if (!qmi_wait_tx_ready()) {
             goto error;
         }
-
         qmi_hw->direct_tx = 0xFF;
 
         if (!qmi_wait_rx_ready()) {
@@ -319,7 +320,6 @@ bool qmi_flash_status_ready(bool *ready) {
 
     if (ready == NULL)
         return false;
-
     *ready = false;
 
     if (!qmi_flash_read_register(CMD_READ_SR1, &sr1, 1))

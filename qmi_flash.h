@@ -79,6 +79,15 @@ extern uint32_t flash_operation_timeout_us;
 // 共通の初期化
 extern void qmi_init(void);
 
+// デバッグ用マクロ
+#if defined(QMI_DEBUG)
+#define TIME_CHECK(str)                                 \
+    debug("%s: %ld us\n", (str), time_us_32() - time0); \
+    time0 = time_us_32();
+#else
+#define TIME_CHECK(str)
+#endif
+
 // サポート関数
 extern void qmi_dump_registers(const char *label);
 extern bool qmi_wait_not_busy(void);

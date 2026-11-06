@@ -99,6 +99,10 @@ typedef enum {
     // Read
     PROGRAM_STATE_RD_RECEIVE_DATA,
 
+    // Erase
+    PROGRAM_STATE_ER_BEGIN,
+    PROGRAM_STATE_ER_WAIT_SR1,
+
     // Status Register 1
     PROGRAM_STATE_STATUS_BEGIN,
     PROGRAM_STATE_STATUS_SEND_CMD,
@@ -117,7 +121,7 @@ typedef enum {
 
 } program_state_t;
 
-static program_state_t program_state = PROGRAM_STATE_IDLE;
+// static program_state_t program_state = PROGRAM_STATE_IDLE;
 
 static const char *program_state_name(program_state_t state) {
     switch (state) {
@@ -147,6 +151,10 @@ static const char *program_state_name(program_state_t state) {
         return "PP_WAIT_BYTE";
     case PROGRAM_STATE_RD_RECEIVE_DATA:
         return "RD_RECEIVE_DATA";
+    case PROGRAM_STATE_ER_BEGIN:
+        return "ER_BEGIN";
+    case PROGRAM_STATE_ER_WAIT_SR1:
+        return "ER_WAIT_SR1";
     case PROGRAM_STATE_STATUS_BEGIN:
         return "STATUS_BEGIN";
     case PROGRAM_STATE_STATUS_SEND_CMD:
@@ -258,47 +266,9 @@ bool toggle_debug_error(void) {
 
 #endif
 
-#if 0
-bool qmi_flash_wait_tx_timeout(void) {
-    uint64_t time0 = time_us_64();
-    while (qmi_hw->direct_csr & QMI_DIRECT_CSR_TXFULL_BITS) {
-        if (time_us_64() - time0 >= 100) {
-            return true;
-        }
-    }
-    return false;
-}
-bool qmi_flash_wait_csrbusy_timeout(void) {
-    uint64_t time0 = time_us_64();
-    while (qmi_hw->direct_csr & QMI_DIRECT_CSR_BUSY_BITS) {
-        if (time_us_64() - time0 >= 100) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool qmi_flash_wait_rxempty_timeout(void) {
-    uint64_t time0 = time_us_64();
-    while (qmi_hw->direct_csr & QMI_DIRECT_CSR_RXEMPTY_BITS) {
-        if (time_us_64() - time0 >= 100) {
-            return true;
-        }
-    }
-    return false;
-}
-#endif
-
-//
-// program_start
-//
-#if defined(QMI_DEBUG)
-#define TIME_CHECK(str)                                 \
-    debug("%s: %ld us\n", (str), time_us_32() - time0); \
-    time0 = time_us_32();
-#else
-#define TIME_CHECK(str)
-#endif
+// ----------------------------------------------------------------
+// program(write)
+// ----------------------------------------------------------------
 
 bool qmi_flash_program_start(uint32_t address, const uint8_t *buffer, size_t length) {
     uint32_t time0 = time_us_32();
@@ -312,8 +282,7 @@ bool qmi_flash_program_start(uint32_t address, const uint8_t *buffer, size_t len
     if (flash_operation != FLASH_OP_NONE)
         return false;
     // 1ページを超えないことを確認
-    if ((address / PAGE_SIZE) !=
-        ((address + length - 1) / PAGE_SIZE))
+    if ((address / PAGE_SIZE) != ((address + length - 1) / PAGE_SIZE))
         return false;
 
     program.address = address;
@@ -701,7 +670,7 @@ error:
 //
 // qmi_flash_erase_4k_start
 //
-bool qmi_flash_erase_4k_start(uint32_t address) {
+bool qmi_flash_erase_4k_start_body(uint32_t address) {
     if ((address & (SECTOR_SIZE - 1u)) != 0)
         return false;
 
@@ -735,40 +704,83 @@ bool qmi_flash_erase_4k_start(uint32_t address) {
     if (!qmi_direct_mode_stop())
         return false;
 
+    // start time
+    flash_operation_start_us = time_us_32();
+
     qmi_flash_set_operation(FLASH_OP_ERASE, FLASH_ERASE_TIMEOUT_US);
+    PROGRAM_SET_STATE(PROGRAM_STATE_ER_BEGIN);
     return true;
 }
 
 // poll 4k erase command completion
-qmi_flash_poll_result_t qmi_flash_erase_poll(void) {
+qmi_flash_poll_result_t qmi_flash_erase_4k_poll_body(void) {
+    uint32_t time0 = time_us_32();
     bool ready = false;
 
     if (flash_operation != FLASH_OP_ERASE)
         return QMI_FLASH_POLL_ERROR;
-
+    TIME_CHECK("1");
     if ((uint32_t)(time_us_32() - flash_operation_start_us) >= flash_operation_timeout_us) {
+        debug("2: timeout %ld / max %ld\n", (time_us_32() - flash_operation_start_us), flash_operation_timeout_us);
         flash_operation = FLASH_OP_NONE;
         return QMI_FLASH_POLL_ERROR;
     }
-
-    flash_start_xip();
-
-    if (!qmi_direct_mode_start())
-        return QMI_FLASH_POLL_ERROR;
-
-    bool read_ok = qmi_flash_status_ready(&ready);
-    bool stop_ok = qmi_direct_mode_stop();
-
-    if (!read_ok || !stop_ok) {
-        flash_operation = FLASH_OP_NONE;
-        return QMI_FLASH_POLL_ERROR;
-    }
-
-    if (!ready)
+    switch (program.state) {
+    case PROGRAM_STATE_ER_BEGIN:
+        PROGRAM_SET_STATE(PROGRAM_STATE_ER_WAIT_SR1);
         return QMI_FLASH_POLL_BUSY;
 
-    flash_operation = FLASH_OP_NONE;
-    return QMI_FLASH_POLL_DONE;
+    case PROGRAM_STATE_ER_WAIT_SR1:
+        TIME_CHECK("2");
+        if (!qmi_direct_mode_start()) {
+            TIME_CHECK("22");
+            return QMI_FLASH_POLL_ERROR;
+        }
+        bool read_ok = qmi_flash_status_ready(&ready);
+        TIME_CHECK("4");
+        bool stop_ok = qmi_direct_mode_stop();
+        TIME_CHECK("5");
+        if (!read_ok || !stop_ok) {
+            flash_operation = FLASH_OP_NONE;
+            return QMI_FLASH_POLL_ERROR;
+        }
+        TIME_CHECK("6");
+
+        if (!ready) {
+            return QMI_FLASH_POLL_BUSY;
+        }
+        TIME_CHECK("7");
+
+        PROGRAM_SET_STATE(PROGRAM_STATE_DONE);
+        return QMI_FLASH_POLL_BUSY;
+
+    case PROGRAM_STATE_DONE:
+        flash_operation = FLASH_OP_NONE;
+        PROGRAM_SET_STATE(PROGRAM_STATE_IDLE);
+        return QMI_FLASH_POLL_DONE;
+
+    default:
+        debug("unknown state\n");
+        PROGRAM_SET_STATE(PROGRAM_STATE_ERROR);
+        goto error;
+    }
+error:
+    /*
+     * エラー処理も本来はQMI BUSY状態を確認してから
+     * CS解除・Direct Mode終了する必要がある。
+     * ここでは概略のみ。
+     */
+    program_debug_error("QMI operation failed");
+    PROGRAM_SET_STATE(PROGRAM_STATE_ERROR);
+    return QMI_FLASH_POLL_ERROR;
+}
+
+bool qmi_flash_erase_4k_start(uint32_t address) {
+    return MEASURE_TIME(qmi_flash_erase_4k_start_body(address));
+}
+
+qmi_flash_poll_result_t qmi_flash_erase_4k_poll(void) {
+    return MEASURE_TIME(qmi_flash_erase_4k_poll_body());
 }
 
 // -----------------------------------------------------------
@@ -793,7 +805,6 @@ bool qmi_flash_read_start_body(uint32_t address, uint8_t *buffer, size_t length)
     // start time
     flash_operation_start_us = time_us_32();
 
-    // flash_start_xip();
     if (!qmi_direct_mode_start())
         return false;
 
@@ -1018,8 +1029,6 @@ bool qmi_flash_read_start_stable(uint32_t address, uint8_t *buffer, size_t lengt
 
     if (flash_operation != FLASH_OP_NONE)
         return false;
-
-    // flash_start_xip();
 
     if (!qmi_direct_mode_start())
         return false;
