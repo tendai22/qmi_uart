@@ -5,6 +5,8 @@
 #include <ctype.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <limits.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,6 +20,7 @@
 #include "qmi_flash.h"
 #include "qmi_flash_async.h"
 #include "qmi_flash_sync.h"
+#include "qmi_floppy.h"
 #include "support.h"
 
 // ------------------------------------------------------------
@@ -75,97 +78,122 @@ static void print_error(const char *message) {
     printf("ERROR: %s\n", message);
 }
 
-// --------------------------------------------
-// FLASH_SIZE - 128kB を r/w/e コマンドのベースオフセットとする。
-// rコマンドのアドレス先頭文字が #の時は絶対アドレス(使用領域からも読み込める)と
-// する。
-// --------------------------------------------
+static void message(const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    int len = vprintf(format, args);
+    va_end(args);
+}
+
+// ------------------------------------------------------------
+// Raw Flash commands:
+//   r/R OFFSET  : byte offset from Drive A base
+//   r/R #ADDRESS: absolute Flash byte address
+//   e/E/w OFFSET: byte offset from Drive A base
+// ------------------------------------------------------------
 
 // ------------------------------------------------------------
 // Help
 // ------------------------------------------------------------
 
 static void command_help(void) {
-    printf("\n");
-    printf("Commands:\n");
-    printf("  r ADDRESS       Read 4 KiB sector into buffer\n");
-    printf("  e ADDRESS       Erase 4 KiB sector\n");
-    printf("  w ADDRESS       Write buffer to Flash (4 KiB)\n");
-    printf("  d [OFF [LEN]]   Dump buffer\n");
-    printf("  f VALUE         Fill buffer with VALUE (00-FF)\n");
-    printf("  s OFF VALUE     Set one byte in buffer\n");
-    printf("  h               Show this help\n");
-    printf("  x               flush debug out\n");
-    printf("  y               toggle debug_enable\n");
-    printf("  c [SEED]        calc CRC-16\n");
-    printf("  ?               Show this help\n");
-    printf("\n");
-    printf("ADDRESS : 6-digit or 8-digit hexadecimal\n");
-    printf("OFF     : buffer offset (hexadecimal)\n");
-    printf("VALUE   : byte value (hexadecimal)\n");
-    printf("\n");
+    message("\n");
+    message("Commands:\n");
+    message("  r ADDRESS       Read 4 KiB at Drive A byte offset\n");
+    message("  r #ADDRESS      Read 4 KiB at absolute Flash address\n");
+    message("  R ADDRESS       Stable Read (same address rules)\n");
+    message("  e ADDRESS       Erase 4 KiB sector\n");
+    message("  w ADDRESS       Write buffer to Flash (4 KiB)\n");
+    message("  fr DRIVE ADDRESS [COUNT]  Floppy read into buffer\n");
+    message("  fw DRIVE ADDRESS [COUNT]  Floppy write from buffer\n");
+    message("  d [OFF [LEN]]   Dump buffer\n");
+    message("  f VALUE         Fill buffer with VALUE (00-FF)\n");
+    message("  s OFF VALUE     Set one byte in buffer\n");
+    message("  h               Show this help\n");
+    message("  x               flush debug out\n");
+    message("  y               toggle debug_enable\n");
+    message("  c [SEED]        calc CRC-16\n");
+    message("  ?               Show this help\n");
+    message("\n");
+    message("ADDRESS : hexadecimal; r/R/e/E/w use Drive A byte offsets\n");
+    message("          r/R #ADDRESS uses absolute Flash byte address\n");
+    message("          fr/fw ADDRESS is a logical sector number\n");
+    message("DRIVE   : 0=A, 1=B (hexadecimal)\n");
+    message("COUNT   : number of floppy sectors (hexadecimal, default 1)\n");
+    message("OFF     : buffer offset (hexadecimal)\n");
+    message("VALUE   : byte value (hexadecimal)\n");
+    message("\n");
 }
 
 // ------------------------------------------------------------
 // Read
 // ------------------------------------------------------------
 
-#define USER_FLASH_SIZE 0x20000u
+// Drive A occupies the lower of the two reserved floppy areas.
+// This matches qmi_floppy_init()'s confirmed layout.
+#define RAW_DRIVE_A_BASE (FLASH_SIZE - DRIVE_A_SIZE - DRIVE_B_SIZE)
 
-static uint32_t base_offset = FLASH_SIZE - USER_FLASH_SIZE;
+_Static_assert(DRIVE_A_SIZE + DRIVE_B_SIZE <= FLASH_SIZE,
+               "Floppy drive areas exceed Flash size");
 
-static bool parse_user_address(const char *arg, uint32_t *address) {
+static bool parse_raw_flash_address(const char *arg,
+                                    bool allow_absolute,
+                                    uint32_t *address)
+{
     uint32_t offset;
+    bool absolute;
 
-    if (arg == NULL) {
-        print_error("Invalid arg pointer");
-        return false;
-    }
-
-    if (!parse_hex(arg, &offset)) {
+    if (arg == NULL || address == NULL) {
         print_error("Invalid address");
         return false;
     }
 
-    if (offset > USER_FLASH_SIZE - SECTOR_SIZE) {
-        print_error("Address out of usable range");
+    absolute = (arg[0] == '#');
+    if (absolute && !allow_absolute) {
+        print_error("Absolute address is not supported for this command");
         return false;
     }
 
-    *address = base_offset + offset;
+    if (!parse_hex(absolute ? arg + 1 : arg, &offset)) {
+        print_error("Invalid address");
+        return false;
+    }
+
+    // Both modes operate on one complete 4 KiB erase sector.
+    if ((offset & (SECTOR_SIZE - 1u)) != 0) {
+        print_error("Address must be 4 KiB aligned");
+        return false;
+    }
+
+    if (absolute) {
+        if (FLASH_SIZE < SECTOR_SIZE ||
+            offset > FLASH_SIZE - SECTOR_SIZE) {
+            print_error("Address out of Flash range");
+            return false;
+        }
+        *address = offset;
+    } else {
+        if (DRIVE_A_SIZE < SECTOR_SIZE ||
+            offset > (DRIVE_A_SIZE + DRIVE_B_SIZE) - SECTOR_SIZE) {
+            printf("offset = %lx\n", (unsigned long)offset);
+            print_error("Address out of Drive A range");
+            return false;
+        }
+        *address = RAW_DRIVE_A_BASE + offset;
+    }
+
     return true;
 }
 
 static void command_read(const char *arg, int stable_flag) {
     uint32_t address;
-    const char *start = arg;
-    int absolute_flag = false;
     uint64_t time0, time1, time2;
 
-    if (arg == NULL) {
-        print_error("Bad arg pointer");
+    if (!parse_raw_flash_address(arg, true, &address))
         return;
-    }
-    if (arg[0] == '#') {
-        // absolute address read
-        if (parse_user_address(arg + 1, &address) == false) {
-            print_error("Invalid address");
-            return;
-        }
-        address -= base_offset;
-    } else {
-        if (parse_user_address(arg, &address) == false) {
-            print_error("Invalid address");
-            return;
-        }
-    }
 
-    if ((address & (SECTOR_SIZE - 1)) != 0) {
-        print_error("Address must be 4 KiB aligned");
-        return;
-    }
-
-    printf("Reading Flash 0x%08lX ...\n", (unsigned long)address);
+    message("Reading Flash 0x%08lX ...\n", (unsigned long)address);
 
     time0 = time_us_64();
     if (stable_flag) {
@@ -174,7 +202,7 @@ static void command_read(const char *arg, int stable_flag) {
         // use: qmi_flash_read_start_stable
         //      qmi_flash_read_poll_stalbe
         if (!qmi_flash_read_start_stable(address, flash_buffer, SECTOR_SIZE)) {
-            printf("Read start failed\n");
+            print_error("Read start failed\n");
             return;
         }
         time1 = time_us_64();
@@ -184,23 +212,23 @@ static void command_read(const char *arg, int stable_flag) {
             if (result == QMI_FLASH_POLL_DONE)
                 break;
             if (result == QMI_FLASH_POLL_ERROR) {
-                printf("Read failed\n");
+                print_error("Read failed\n");
                 return;
             }
             tight_loop_contents();
         }
         time2 = time_us_64();
-        printf("time1: %8lld\n", time1 - time0);
-        printf("time2: %8lld\n", time2 - time1);
+        message("time1: %8lld\n", time1 - time0);
+        message("time2: %8lld\n", time2 - time1);
 #else
-        printf("read stable not supported");
+        printf_error("read stable not supported");
 #endif
     } else {
         // stable mode
         // use: qmi_flash_read_start_stable
         //      qmi_flash_read_poll_stalbe
         if (!qmi_flash_read_start(address, flash_buffer, SECTOR_SIZE)) {
-            printf("Read start failed\n");
+            print_error("Read start failed\n");
             return;
         }
         time1 = time_us_64();
@@ -210,16 +238,16 @@ static void command_read(const char *arg, int stable_flag) {
             if (result == QMI_FLASH_POLL_DONE)
                 break;
             if (result == QMI_FLASH_POLL_ERROR) {
-                printf("Read failed\n");
+                print_error("Read failed\n");
                 return;
             }
             tight_loop_contents();
         }
         time2 = time_us_64();
-        printf("time1: %8lld\n", time1 - time0);
-        printf("time2: %8lld\n", time2 - time1);
+        message("time1: %8lld\n", time1 - time0);
+        message("time2: %8lld\n", time2 - time1);
     }
-    printf("Read completed.\n");
+    message("Read completed.\n");
 }
 
 // ------------------------------------------------------------
@@ -230,29 +258,15 @@ static void command_erase(const char *arg, int async_flag) {
     uint32_t address;
     uint64_t time0, time1, time2;
 
-    if (!parse_hex(arg, &address)) {
-        print_error("Invalid address");
+    if (!parse_raw_flash_address(arg, false, &address))
         return;
-    }
 
-    address += base_offset;
-
-    if ((address & (SECTOR_SIZE - 1)) != 0) {
-        print_error("Address must be 4 KiB aligned");
-        return;
-    }
-
-    if (address > FLASH_SIZE - SECTOR_SIZE) {
-        print_error("Address out of Flash range");
-        return;
-    }
-
-    printf("Erasing sector at 0x%08lX ...\n", (unsigned long)address);
+    message("Erasing sector at 0x%08lX ...\n", (unsigned long)address);
 
     time0 = time_us_64();
     if (async_flag) {
         if (!qmi_flash_erase_4k_start(address)) {
-            printf("Erase start failed\n");
+            print_error("Erase start failed\n");
             return;
         }
         time1 = time_us_64();
@@ -263,15 +277,15 @@ static void command_erase(const char *arg, int async_flag) {
                 break;
 
             if (result == QMI_FLASH_POLL_ERROR) {
-                printf("Erase failed or timed out\n");
+                print_error("Erase failed or timed out\n");
                 return;
             }
 
             tight_loop_contents();
         }
         time2 = time_us_64();
-        printf("time1: %8lld\n", time1 - time0);
-        printf("time2: %8lld\n", time2 - time0);
+        message("time1: %8lld\n", time1 - time0);
+        message("time2: %8lld\n", time2 - time0);
 
     } else {
         if (!qmi_flash_erase_4k(address)) {
@@ -279,9 +293,9 @@ static void command_erase(const char *arg, int async_flag) {
             return;
         }
         time2 = time_us_64();
-        printf("time1: %8lld\n", time1 - time0);
+        message("time1: %8lld\n", time1 - time0);
     }
-    printf("Erase completed.\n");
+    message("Erase completed.\n");
 }
 
 // ------------------------------------------------------------
@@ -293,28 +307,16 @@ static void command_write(const char *arg, int async_flag) {
     uint32_t offset;
     uint64_t time0, time1, time2;
 
-    if (!parse_hex(arg, &address)) {
-        print_error("Invalid address");
+    if (!parse_raw_flash_address(arg, false, &address))
         return;
-    }
 
-    address += base_offset;
-
-    if ((address & (SECTOR_SIZE - 1)) != 0) {
-        print_error("Address must be 4 KiB aligned");
-        return;
-    }
-    if (address > FLASH_SIZE - SECTOR_SIZE) {
-        print_error("Address out of Flash range");
-        return;
-    }
-    printf("Writing buffer to Flash 0x%08lX ...\n", (unsigned long)address);
+    message("Writing buffer to Flash 0x%08lX ...\n", (unsigned long)address);
     // Page Program must not cross a 256-byte page boundary.
     time0 = time_us_64();
     for (offset = 0; offset < SECTOR_SIZE; offset += PAGE_SIZE) {
         if (async_flag) {
             if (!qmi_flash_program_start(address + offset, &flash_buffer[offset], PAGE_SIZE)) {
-                printf("Write start failed\n");
+                print_error("Write start failed\n");
                 return;
             }
             time1 = time_us_64();
@@ -325,24 +327,103 @@ static void command_write(const char *arg, int async_flag) {
                     break;
 
                 if (result == QMI_FLASH_POLL_ERROR) {
-                    printf("Write failed or timed out\n");
+                    print_error("Write failed or timed out\n");
                     return;
                 }
-                // printf("time1: %8lld\n", time1 - time0);
+                // message("time1: %8lld\n", time1 - time0);
                 tight_loop_contents();
             }
             time2 = time_us_64();
-            printf("time2: %8lld\n", time2 - time1);
+            message("time2: %8lld\n", time2 - time1);
         } else {
             if (!qmi_flash_program_page(address + offset, &flash_buffer[offset], PAGE_SIZE)) {
-                printf("Write failed at 0x%08lX\n", (unsigned long)(address + offset));
+                message("ERROR: Write failed at 0x%08lX\n", (unsigned long)(address + offset));
                 return;
             }
             time2 = time_us_64();
-            printf("time2: %8lld\n", time2 - time0);
+            message("time2: %8lld\n", time2 - time0);
         }
     }
-    printf("Write completed.\n");
+    message("Write completed.\n");
+}
+
+// ------------------------------------------------------------
+// Floppy synchronous read/write
+// ------------------------------------------------------------
+
+// Test configuration. Change these values to 128 if needed.
+#define FLOPPY_TEST_SECTOR_SIZE_A 256u
+#define FLOPPY_TEST_SECTOR_SIZE_B 256u
+
+static bool floppy_ready = false;
+
+static void command_floppy(const char *drive_arg,
+                           const char *address_arg,
+                           const char *count_arg,
+                           bool write_flag)
+{
+    uint32_t drive_value, address, count = 1;
+    uint32_t bytes;
+    int drive;
+    uint64_t time0, elapsed;
+    qmi_floppy_result_t result;
+
+    if (!floppy_ready) {
+        print_error("Floppy initialization failed");
+        return;
+    }
+
+    if (!parse_hex(drive_arg, &drive_value) ||
+        drive_value >= NUM_DRIVE) {
+        print_error("Invalid floppy drive (0=A, 1=B)");
+        return;
+    }
+    drive = (int)drive_value;
+
+    if (!parse_hex(address_arg, &address)) {
+        print_error("Invalid floppy sector address");
+        return;
+    }
+
+    if (count_arg != NULL && !parse_hex(count_arg, &count)) {
+        print_error("Invalid floppy sector count");
+        return;
+    }
+
+    if (count == 0 || count > INT_MAX ||
+        sector_size[drive] == 0 ||
+        count > sizeof(flash_buffer) / sector_size[drive]) {
+        print_error("Floppy count exceeds buffer capacity");
+        return;
+    }
+
+    // Avoid unsigned overflow in address + count.
+    if (address >= drive_size[drive] ||
+        count > drive_size[drive] - address) {
+        print_error("Floppy sector range out of drive");
+        return;
+    }
+
+    bytes = count * sector_size[drive];
+    message("Floppy %s: drive=%lu, sector=0x%08lX, count=0x%lX, bytes=%lu\n",
+            write_flag ? "write" : "read",
+            (unsigned long)drive_value,
+            (unsigned long)address,
+            (unsigned long)count,
+            (unsigned long)bytes);
+
+    time0 = time_us_64();
+    if (write_flag) {
+        result = qmi_floppy_write(drive, address, (int)count, flash_buffer);
+    } else {
+        result = qmi_floppy_read(drive, address, (int)count, flash_buffer);
+    }
+    elapsed = time_us_64() - time0;
+
+    message("Floppy %s: %s, elapsed=%llu us\n",
+            write_flag ? "write" : "read",
+            result == QMI_FLOPPY_RESULT_OK ? "OK" : "ERROR",
+            (unsigned long long)elapsed);
 }
 
 // ------------------------------------------------------------
@@ -384,11 +465,11 @@ static void command_dump(const char *arg_offset, const char *arg_length) {
 
         if (count > 16)
             count = 16;
-        printf("%04lX: ", (unsigned long)(offset + i));
+        message("%04lX: ", (unsigned long)(offset + i));
         for (j = 0; j < count; j++) {
-            printf("%02X ", flash_buffer[offset + i + j]);
+            message("%02X ", flash_buffer[offset + i + j]);
         }
-        printf("\n");
+        message("\n");
     }
     next_address = offset + length;
 }
@@ -402,7 +483,7 @@ static void command_fill(const char *arg) {
 
     if (arg && arg[0] == 'r') {
         fill_random(flash_buffer, SECTOR_SIZE, 12345678u);
-        printf("Buffer filled randomly\n");
+        message("Buffer filled randomly\n");
         return;
     }
     if (!parse_hex(arg, &value) || value > 0xFF) {
@@ -410,7 +491,7 @@ static void command_fill(const char *arg) {
         return;
     }
     memset(flash_buffer, (uint8_t)value, SECTOR_SIZE);
-    printf("Buffer filled with %02lX.\n", (unsigned long)value);
+    message("Buffer filled with %02lX.\n", (unsigned long)value);
 }
 
 // ------------------------------------------------------------
@@ -419,7 +500,7 @@ static void command_fill(const char *arg) {
 
 static void command_crc16(const char *seed) {
     uint16_t crc = crc16_ccitt_false(flash_buffer, SECTOR_SIZE);
-    printf("CRC16: %04x\n", crc);
+    message("CRC16: %04x\n", crc);
 }
 
 // ------------------------------------------------------------
@@ -443,7 +524,7 @@ static void command_set(const char *arg_offset, const char *arg_value) {
         return;
     }
     flash_buffer[offset] = (uint8_t)value;
-    printf("Buffer[%04lX] = %02lX\n", (unsigned long)offset, (unsigned long)value);
+    message("Buffer[%04lX] = %02lX\n", (unsigned long)offset, (unsigned long)value);
 }
 
 // ------------------------------------------------------------
@@ -464,7 +545,14 @@ static void execute_command(char *line) {
     if (argc == 0)
         return;
 
-    if (strcmp(argv[0], "r") == 0) {
+    if (strcmp(argv[0], "fr") == 0 || strcmp(argv[0], "fw") == 0) {
+        if (argc != 3 && argc != 4) {
+            print_error("Usage: fr|fw DRIVE ADDRESS [COUNT]");
+            return;
+        }
+        command_floppy(argv[1], argv[2], argc == 4 ? argv[3] : NULL,
+                       strcmp(argv[0], "fw") == 0);
+    } else if (strcmp(argv[0], "r") == 0) {
         if (argc != 2) {
             print_error("Usage: r ADDRESS");
             return;
@@ -518,16 +606,16 @@ static void execute_command(char *line) {
         command_help();
     } else if (strcmp(argv[0], "x") == 0) {
         if (argc == 2) {
-            print_error("clear buffer");
+            message("clear buffer");
             memprt_clear();
         } else {
-            print_error("flush_buffer:");
+            message("flush_buffer:");
             memprt_flush();
         }
     } else if (strcmp(argv[0], "c") == 0) {
         command_crc16(argv[1]);
     } else if (strcmp(argv[0], "y") == 0) {
-        printf("toggle debug_error: %s\n", toggle_debug_error() ? "true" : "false");
+        message("toggle debug_error: %s\n", toggle_debug_error() ? "true" : "false");
     } else {
         print_error("Unknown command");
     }
@@ -544,13 +632,25 @@ void command_loop(void) {
     // clear buffer
     memset(flash_buffer, 0xFF, sizeof(flash_buffer));
 
-    printf("\nQMI Flash monitor\n");
+    // Initialize floppy test configuration before accepting commands.
+    sector_size[0] = FLOPPY_TEST_SECTOR_SIZE_A;
+    sector_size[1] = FLOPPY_TEST_SECTOR_SIZE_B;
+    floppy_ready = (qmi_floppy_init() == QMI_FLOPPY_RESULT_OK);
+
+    message("\nQMI Flash monitor\n");
+    if (floppy_ready) {
+        message("Floppy initialized: A=%lu x %lu, B=%lu x %lu bytes\n",
+                (unsigned long)drive_size[0], (unsigned long)sector_size[0],
+                (unsigned long)drive_size[1], (unsigned long)sector_size[1]);
+    } else {
+        print_error("Floppy initialization failed; fr/fw disabled");
+    }
     command_help();
     test_crc16();
 
     while (true) {
 
-        printf("> ");
+        message("> ");
         fflush(stdout);
 
         length = 0;

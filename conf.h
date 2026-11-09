@@ -25,11 +25,21 @@
 
 #if defined(USE_STUB)
 #define FLASH_SIZE          0x20000u    // 128kB
+#define NUM_DRIVE   2
+#define DRIVE_A_SIZE    0x10000u    // 64kB
+#define DRIVE_B_SIZE    0x10000u    // 64kB
 #else
 #define FLASH_SIZE          0x400000u  // 4 MiB
+//
+// pseudo floppy disk parameters
+//
+#define NUM_DRIVE   2
+#define DRIVE_A_SIZE    0x40000u    // 256kB
+#define DRIVE_B_SIZE    0x40000u    // 256kB
 #endif
 
 #define SECTOR_SIZE         0x1000u    // 4 KiB
 #define PAGE_SIZE           0x100u     // 256 bytes
+
 
 #endif //__CONF_H

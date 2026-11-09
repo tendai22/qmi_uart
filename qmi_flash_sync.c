@@ -83,6 +83,7 @@ bool qmi_flash_program_page(uint32_t address, const uint8_t *buffer, size_t leng
 
 
 #else // USE_STUB
+
 // -----------------------------------------------------------------------------
 // Sector Erase 4 KiB
 // -----------------------------------------------------------------------------

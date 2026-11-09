@@ -62,21 +62,12 @@ qmi_flash_poll_result_t qmi_flash_program_poll(void) {
 // read/erase/program async mode
 //
 
-// Read の進行状態
-// static uint8_t *read_buffer;
-// static size_t read_length;
-// static size_t read_position;
-
 // --------------------------------------------
 // async-poll program(write)
 // --------------------------------------------
 
 //
-// async-poll version
-//
-
-//
-// page-program status
+// program status
 //
 typedef enum {
     PROGRAM_STATE_IDLE,
@@ -161,8 +152,6 @@ static const char *program_state_name(program_state_t state) {
         return "STATUS_SEND_CMD";
     case PROGRAM_STATE_STATUS_WAIT_CMD:
         return "STATUS_WAIT_CMD";
-    // case PROGRAM_STATE_STATUS_WAIT_DATA:
-    //     return "STATUS_WAIT_DATA";
     case PROGRAM_STATE_STATUS_SEND_DUMMY:
         return "STATUS_SEND_DUMMY";
     case PROGRAM_STATE_STATUS_WAIT_RX:
@@ -608,61 +597,6 @@ qmi_flash_poll_result_t qmi_flash_program_poll(void) {
     return MEASURE_TIME(qmi_flash_program_poll_body());
 }
 
-#if 0
-// async program issue
-bool qmi_flash_program_page_start(uint32_t address, const uint8_t *buffer, size_t length) {
-    if (buffer == NULL || length == 0 || length > PAGE_SIZE)
-        return false;
-
-    if ((address / PAGE_SIZE) != ((address + length - 1u) / PAGE_SIZE))
-        return false;
-
-    if (!qmi_flash_check_range(address, length))
-        return false;
-
-    if (flash_operation != FLASH_OP_NONE)
-        return false;
-
-    if (!qmi_flash_begin_write())
-        return false;
-
-    // 02h + 24-bit address + data
-    qmi_hw->direct_csr |= QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
-
-    if (!qmi_flash_write_byte(CMD_PAGE_PROGRAM) ||
-        !qmi_flash_write_byte((uint8_t)(address >> 16)) ||
-        !qmi_flash_write_byte((uint8_t)(address >> 8)) ||
-        !qmi_flash_write_byte((uint8_t)address)) {
-        goto error;
-    }
-
-    for (size_t i = 0; i < length; ++i) {
-        if (!qmi_flash_write_byte(buffer[i]))
-            goto error;
-    }
-
-    if (!qmi_wait_not_busy())
-        goto error;
-
-    // CS High で Program を開始
-    qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
-
-    if (!qmi_direct_mode_stop())
-        return false;
-
-    qmi_flash_set_operation(FLASH_OP_PROGRAM, FLASH_PROGRAM_TIMEOUT_US);
-
-    return true;
-
-error:
-    (void)qmi_wait_not_busy();
-    qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
-    (void)qmi_direct_mode_stop();
-    return false;
-}
-
-// async program poll
-#endif
 // -------------------------------------------------
 // async erase 4k
 // -------------------------------------------------
@@ -714,14 +648,11 @@ bool qmi_flash_erase_4k_start_body(uint32_t address) {
 
 // poll 4k erase command completion
 qmi_flash_poll_result_t qmi_flash_erase_4k_poll_body(void) {
-    uint32_t time0 = time_us_32();
     bool ready = false;
 
     if (flash_operation != FLASH_OP_ERASE)
         return QMI_FLASH_POLL_ERROR;
-    TIME_CHECK("1");
     if ((uint32_t)(time_us_32() - flash_operation_start_us) >= flash_operation_timeout_us) {
-        debug("2: timeout %ld / max %ld\n", (time_us_32() - flash_operation_start_us), flash_operation_timeout_us);
         flash_operation = FLASH_OP_NONE;
         return QMI_FLASH_POLL_ERROR;
     }
@@ -731,26 +662,19 @@ qmi_flash_poll_result_t qmi_flash_erase_4k_poll_body(void) {
         return QMI_FLASH_POLL_BUSY;
 
     case PROGRAM_STATE_ER_WAIT_SR1:
-        TIME_CHECK("2");
         if (!qmi_direct_mode_start()) {
-            TIME_CHECK("22");
             return QMI_FLASH_POLL_ERROR;
         }
         bool read_ok = qmi_flash_status_ready(&ready);
-        TIME_CHECK("4");
         bool stop_ok = qmi_direct_mode_stop();
-        TIME_CHECK("5");
         if (!read_ok || !stop_ok) {
             flash_operation = FLASH_OP_NONE;
             return QMI_FLASH_POLL_ERROR;
         }
-        TIME_CHECK("6");
 
         if (!ready) {
             return QMI_FLASH_POLL_BUSY;
         }
-        TIME_CHECK("7");
-
         PROGRAM_SET_STATE(PROGRAM_STATE_DONE);
         return QMI_FLASH_POLL_BUSY;
 
