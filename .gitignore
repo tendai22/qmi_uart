@@ -3,6 +3,7 @@
 /build/
 /.bloop/
 /.metals/
+/junk/
 
 # OSが生成する一時ファイル
 .DS_Store
