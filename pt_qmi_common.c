@@ -9,13 +9,19 @@
 #include "hardware/flash.h"
 #include "hardware/regs/qmi.h"
 #include "hardware/structs/qmi.h"
+#include "pico/stdlib.h"
+#include "pico/time.h"
 
 #include "protothread.h"
 
 #include "conf.h"
 #include "pt_qmi.h"
+#include "memprt.h"
+
+#include "pt_qmi_common_table.h"
 
 static struct pt_erase {
+    int line;
     int command;
     int error;
     int done;
@@ -26,7 +32,7 @@ static struct pt_erase *pt = &pt_body;
 
 // erase 発行
 
-bool pt_issue_erase(struct pt_erase *pt, uint32_t address)
+bool pt_issue_erase(uint32_t address)
 {
     if (pt->command)
         return false;   // 他のコマンド実行中、エラー
@@ -39,16 +45,20 @@ bool pt_issue_erase(struct pt_erase *pt, uint32_t address)
     return true;
 }
 
-bool pt_is_erase_done(struct pt_erase *pt)
+bool pt_is_erase_done(void)
 {
     return pt->done != true;
 }
 
-int pt_error_code(struct pt_erase *pt)
+int pt_error_code(void)
 {
     return pt->error;
 }
 
+bool pt_issue_ready(void)
+{
+    return pt->command == 0;
+}
 //
 // polling functions
 //
@@ -66,10 +76,10 @@ bool pt_erase_param_check(struct pt_erase *pt)
 
 
 
-bool pt_qmi_flash_erase_4k_poll(struct pt_erase *pt) {
+static void pt_qmi_flash_erase_4k_poll_body(void) {
     PT_BEGIN(pt);
     if (pt->command != CMD_ERASE)
-        return false;
+        return;
     // start erase
     pt->error = 0;
     if (pt_erase_param_check(pt))
@@ -129,4 +139,18 @@ finalize:
     pt->command = 0;
     pt->done = true;
     PT_END(pt);
+}
+
+static uint32_t start;
+static uint32_t elapsed;
+
+void pt_qmi_flash_erase_4k_poll(void)
+{
+    int old_line = pt->line;
+    start = time_us_32();
+    pt_qmi_flash_erase_4k_poll_body();
+    elapsed = time_us_32() - start;
+    debug("%s -> %s: %ld us\n", pt_label(old_line), pt_label(pt->line), elapsed);
+    pt_stats_enter(old_line);
+    pt_stats_leave(old_line, elapsed);
 }

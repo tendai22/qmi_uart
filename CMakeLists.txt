@@ -63,9 +63,8 @@ set(GEN_TABLE_PY ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_table.py)
 # Protothread対象ファイル
 #
 
-set(
-    GEN_TABLE_SRC_FILES
-    mt_qmi_common.c
+set(GEN_TABLE_SRC_FILES
+    pt_qmi_common.c
 )
 
 #

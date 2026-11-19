@@ -22,4 +22,3 @@
             return; \
         case __LINE__:; \
     } while(0)
-
