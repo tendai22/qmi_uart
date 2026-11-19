@@ -96,9 +96,11 @@ def write_header(outfile, entries):
 
 def write_source(outfile, entries):
     labels = [x[1] for x in entries]
+    header_name = Path(outfile).with_suffix(".h").name
+
     with open(outfile, "w", encoding="utf-8") as f:
-        f.write('#include "foo_table.h"\n')
-        f.write('#include "debug.h"\n\n')
+        f.write(f'#include "{header_name}"\n')
+        f.write('#include "memprt.h"\n\n')
         f.write("typedef struct\n")
         f.write("{\n")
         f.write("    uint32_t count;\n")

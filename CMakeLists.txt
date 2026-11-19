@@ -28,118 +28,67 @@ set(PICO_BOARD pico2 CACHE STRING "Board type")
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
 
+
 project(qmi_uart C CXX ASM)
 
-set(GEN_TABLE_SRC_FILES
-    mt_qmi_common.c
-)
-
-# Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
-#
-# Python
-#
-# Linux:
-#   /usr/bin/python3
-#
-# Windows:
-#   python.exe
-#
-# が自動選択される
-#
-find_package(
-    Python3 REQUIRED
-    COMPONENTS Interpreter
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+# Protothread table generator
+set(GEN_TABLE_PY
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_table.py"
 )
 
-#
-# gen_table.py
-#
-
-set(GEN_TABLE_PY ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_table.py)
-
-#
-# Protothread対象ファイル
-#
-
+# Protothread source files
 set(GEN_TABLE_SRC_FILES
     pt_qmi_common.c
 )
 
-#
-# 生成物一覧
-#
-
 set(GENERATED_TABLE_SRCS)
 set(GENERATED_TABLE_HDRS)
 
-#
-# cache_manager.c
-#      ↓
-# cache_manager_table.[ch]
-#
-# flash_driver.c
-#      ↓
-# flash_driver_table.[ch]
-#
-# ...
-#
+foreach(SRC IN LISTS GEN_TABLE_SRC_FILES)
+    get_filename_component(BASE "${SRC}" NAME_WE)
 
-foreach(SRC ${GEN_TABLE_SRC_FILES})
-    #
-    # cache_manager
-    #
-    get_filename_component(BASE ${SRC} NAME_WE)
+    set(SOURCE_FILE
+        "${CMAKE_CURRENT_SOURCE_DIR}/${SRC}"
+    )
+    set(GENERATED_H
+        "${CMAKE_CURRENT_BINARY_DIR}/${BASE}_table.h"
+    )
+    set(GENERATED_C
+        "${CMAKE_CURRENT_BINARY_DIR}/${BASE}_table.c"
+    )
 
-    #
-    # source path
-    #
-    set(SOURCE_FILE ${CMAKE_CURRENT_SOURCE_DIR}/${SRC})
-
-    #
-    # generated paths
-    #
-    set(GENERATED_H ${CMAKE_CURRENT_BINARY_DIR}/${BASE}_table.h)
-    set(GENERATED_C ${CMAKE_CURRENT_BINARY_DIR}/${BASE}_table.c)
-
-    #
-    # foo.c
-    #    ↓
-    # gen_table.py
-    #    ↓
-    # foo_table.h
-    # foo_table.c
-    #
+    if(NOT EXISTS "${SOURCE_FILE}")
+        message(FATAL_ERROR
+            "Protothread source not found: ${SOURCE_FILE}"
+        )
+    endif()
 
     add_custom_command(
         OUTPUT
-            ${GENERATED_H}
-            ${GENERATED_C}
+            "${GENERATED_H}"
+            "${GENERATED_C}"
         COMMAND
-            ${Python3_EXECUTABLE}
-            ${GEN_TABLE_PY}
-            ${SOURCE_FILE}
-            ${GENERATED_H}
-            ${GENERATED_C}
+            "${Python3_EXECUTABLE}"
+            "${GEN_TABLE_PY}"
+            "${SOURCE_FILE}"
+            "${GENERATED_H}"
+            "${GENERATED_C}"
         DEPENDS
-            ${SOURCE_FILE}
-            ${GEN_TABLE_PY}
-        COMMENT
-            "Generating ${BASE}_table.[ch]"
+            "${SOURCE_FILE}"
+            "${GEN_TABLE_PY}"
+        COMMENT "Generating ${BASE}_table.[ch]"
         VERBATIM
     )
 
-    list(
-        APPEND
-        GENERATED_TABLE_SRCS
-        ${GENERATED_C}
+    list(APPEND GENERATED_TABLE_SRCS
+        "${GENERATED_C}"
     )
-
-    list(
-        APPEND
-        GENERATED_TABLE_HDRS
-        ${GENERATED_H}
+    list(APPEND GENERATED_TABLE_HDRS
+        "${GENERATED_H}"
     )
 endforeach()
 
@@ -157,7 +106,8 @@ add_custom_target(generate_pt_tables
 
 add_executable(qmi_uart qmi_uart.c cmd.c memprt.c support.c
                 qmi_floppy.c pt_qmi_common.c
-                qmi_flash.c qmi_flash_sync.c qmi_flash_async.c)
+                qmi_flash.c qmi_flash_sync.c qmi_flash_async.c
+                ${GENERATED_TABLE_SRCS})
 
 pico_set_program_name(qmi_uart "qmi_uart")
 pico_set_program_version(qmi_uart "0.1")
