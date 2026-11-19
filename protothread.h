@@ -3,26 +3,23 @@
 // protothread.h ... pseudo-coroutine macros
 //
 
-// PT_BEGIN
-#define PT_BEGIN()     \
-    static int pt_line = 0; \
-    switch (pt_line) { \
+#define PT_BEGIN(pt) \
+    switch((pt)->line) \
+    { \
     case 0:
 
-// PT_END
-
-#define PT_END() \
-    }            \
-    pt_line = 0; \
-    return true
+#define PT_END(pt) \
+    } \
+    (pt)->line = 0; \
+    return
 
 // PT_WAIT_UNTIL ... while(!cond);
 // condが成立するまでここで待ち続ける
-#define PT_WAIT_UNTIL(cond) \
-    do {                    \
-        pt_line = __LINE__;    \
-    case __LINE__:          \
-        if (!(cond))        \
-            return false;   \
-    } while (0)
+#define PT_WAIT_UNTIL_L(pt, cond, label) \
+    do { \
+        pt->line = __LINE__; \
+        if(!(cond)) \
+            return; \
+        case __LINE__:; \
+    } while(0)
 
