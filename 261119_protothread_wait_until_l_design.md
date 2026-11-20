@@ -278,15 +278,16 @@ void pt_stats_dump(void)
 ## ラベル付きWAIT
 
 ```c
-#define WAIT_UNTIL_L(cond, label) \
+#define PT_WAIT_UNTIL_L(pt, cond, label) \
     do { \
+        case __LINE__: \
         pt->line = __LINE__; \
-        if(!(cond)) \
+        if (!(cond)) \
             return; \
-        case __LINE__:; \
-    } while(0)
+    } while (0)
 ```
 
+    
 ## PT_BEGIN
 
 ```c

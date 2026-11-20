@@ -138,6 +138,7 @@ target_link_libraries(qmi_uart
         hardware_uart
         hardware_clocks
         hardware_flash
+        pico_multicore
 )
 
 # link option

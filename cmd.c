@@ -3,10 +3,10 @@
 //
 
 #include <ctype.h>
-#include <stdbool.h>
-#include <stdint.h>
 #include <limits.h>
 #include <stdarg.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +22,9 @@
 #include "qmi_flash_sync.h"
 #include "qmi_floppy.h"
 #include "support.h"
+
+#include "protothread.h"
+#include "pt_qmi.h"
 
 // ------------------------------------------------------------
 // QMI Flash functions
@@ -78,8 +81,7 @@ static void print_error(const char *message) {
     printf("ERROR: %s\n", message);
 }
 
-static void message(const char *format, ...)
-{
+static void message(const char *format, ...) {
     va_list args;
     va_start(args, format);
     int len = vprintf(format, args);
@@ -139,8 +141,7 @@ _Static_assert(DRIVE_A_SIZE + DRIVE_B_SIZE <= FLASH_SIZE,
 
 static bool parse_raw_flash_address(const char *arg,
                                     bool allow_absolute,
-                                    uint32_t *address)
-{
+                                    uint32_t *address) {
     uint32_t offset;
     bool absolute;
 
@@ -298,6 +299,36 @@ static void command_erase(const char *arg, int async_flag) {
     message("Erase completed.\n");
 }
 
+static void command_erase_test(const char *arg) {
+    uint32_t address;
+    uint32_t time0, time1, time2;
+
+    if (!parse_raw_flash_address(arg, false, &address))
+        return;
+
+    message("Erasing (TEST) sector at 0x%08lX ...\n", (unsigned long)address);
+
+    time0 = time_us_32();
+
+    while (!pt_issue_ready())
+        tight_loop_contents();
+    time1 = time_us_32();
+    if (!pt_issue_erase(address)) {
+        print_error("pt_issue_erase: failed\n");
+        return;
+    }
+    while (!pt_is_erase_done())
+        tight_loop_contents();
+
+    time2 = time_us_32();
+    int err = pt_error_code();
+    message("error: %d\n", err);
+    message("time1: %8ld %8ld\n", time1 - time0, time0);
+    message("time2: %8ld %8ld\n", time2 - time1, time1);
+    message("Erase completed.\n");
+    pt_dump_polltime();
+}
+
 // ------------------------------------------------------------
 // Write
 // ------------------------------------------------------------
@@ -360,8 +391,7 @@ static bool floppy_ready = false;
 static void command_floppy(const char *drive_arg,
                            const char *address_arg,
                            const char *count_arg,
-                           bool write_flag)
-{
+                           bool write_flag) {
     uint32_t drive_value, address, count = 1;
     uint32_t bytes;
     int drive;
@@ -570,6 +600,12 @@ static void execute_command(char *line) {
             return;
         }
         command_erase(argv[1], true);
+    } else if (strcmp(argv[0], "ee") == 0) {
+        if (argc != 2) {
+            print_error("Usage: ee ADDRESS");
+            return;
+        }
+        command_erase_test(argv[1]);
     } else if (strcmp(argv[0], "E") == 0) {
         if (argc != 2) {
             print_error("Usage: e ADDRESS");

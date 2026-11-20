@@ -17,8 +17,8 @@
 // condが成立するまでここで待ち続ける
 #define PT_WAIT_UNTIL_L(pt, cond, label) \
     do { \
+        case __LINE__: \
         pt->line = __LINE__; \
-        if(!(cond)) \
+        if (!(cond)) \
             return; \
-        case __LINE__:; \
-    } while(0)
+    } while (0)

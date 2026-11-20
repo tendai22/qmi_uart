@@ -60,5 +60,9 @@ extern bool qmi_flash_wait_ready(uint32_t timeout_us);
 //
 // poll and start
 //
-extern bool pt_issie_erase(uint32_t address);
+extern bool pt_issue_erase(uint32_t address);
+extern bool pt_is_erase_done(void);
+extern bool pt_issue_ready(void);
+extern int  pt_error_code(void);
 extern void pt_qmi_flash_erase_4k_poll(void);
+extern void pt_dump_polltime(void);
