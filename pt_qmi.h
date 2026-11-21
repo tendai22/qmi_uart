@@ -66,6 +66,7 @@ extern bool qmi_flash_wait_ready(uint32_t timeout_us);
 //
 extern bool pt_issue_erase(uint32_t address);
 extern bool pt_issue_program(uint32_t address, uint8_t *buffer, uint32_t length);
+extern bool pt_issue_read(uint32_t address, uint8_t *buffer, uint32_t length);
 extern bool pt_is_done(void);
 extern bool pt_issue_ready(void);
 extern int  pt_error_code(void);

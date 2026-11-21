@@ -146,8 +146,6 @@ static void pt_qmi_flash_erase_4k_poll_body(void) {
 done:
     if (!qmi_direct_mode_stop()) {
         pt->error = 1;
-    } else {
-        pt->error = 0;
     }
     goto finalize;
 
@@ -168,7 +166,7 @@ finalize:
 
 static uint32_t start;
 static uint32_t elapsed;
-static int count = 0;
+static int total_count = 0;
 
 typedef void (*pt_body_func_t)(void);
 
@@ -188,11 +186,11 @@ static void pt_qmi_flash_func_poll(pt_body_func_t body_func) {
     if (old_line != 0 || pt->line != 0) {
         if (old_line != pt->line) {
             elapsed = now - start;
-            debug("%s -> %s: %lu us, count = %d\n", pt_label(old_line), pt_label(pt->line), (unsigned long)elapsed, count);
+            debug("%s -> %s: %lu us, count = %d\n", pt_label(old_line), pt_label(pt->line), (unsigned long)elapsed, total_count);
             start = now;
-            count = 0;
+            total_count = 0;
         } else {
-            count++;
+            total_count++;
         }
     }
     pt_stats_enter(old_line);
@@ -223,8 +221,7 @@ bool pt_issue_program(uint32_t address, uint8_t *buffer, uint32_t length) {
     return true;
 }
 
-bool pt_program_page_param_check(void)
-{
+bool pt_program_page_param_check(void) {
     if (pt->buffer == NULL)
         return false;
     if (pt->length == 0 || pt->length > PAGE_SIZE)
@@ -243,15 +240,14 @@ bool pt_program_page_param_check(void)
 }
 
 // 8 バイトまたは残りを書き出す。書き込みが終わると true を返す
-static bool pt_write_chunk_bytes(void)
-{
+static bool pt_write_chunk_bytes(void) {
     int n = pt->length - pt->count;
     if (n > 8)
         n = 8;
     for (int i = 0; i < n; ++i) {
         if (!qmi_flash_write_byte(pt->buffer[pt->count])) {
             pt->error = 5;
-            return true;  // PT_WAITを抜けてエラー処理へ
+            return true; // PT_WAITを抜けてエラー処理へ
         }
         pt->count++;
     }
@@ -312,8 +308,6 @@ void pt_qmi_flash_program_page_poll_body(void) {
 done:
     if (!qmi_direct_mode_stop()) {
         pt->error = 1;
-    } else {
-        pt->error = 0;
     }
     goto finalize;
 
@@ -336,22 +330,155 @@ void pt_qmi_flash_program_page_poll(void) {
     pt_qmi_flash_func_poll(pt_qmi_flash_program_page_poll_body);
 }
 
+// ------------------------------------------------
+// read
+// ------------------------------------------------
+
+bool pt_issue_read(uint32_t address, uint8_t *buffer, uint32_t length) {
+    if (pt->command)
+        return false; // 他のコマンド実行中、エラー
+    pt->command = CMD_READ;
+    // パラメータ設定
+    pt->address = address;
+    pt->buffer = buffer;
+    pt->length = length;
+    // protothread状態初期化
+    pt->count = 0;
+    // pt->line = 0;        // protothread start
+    pt->done = 0;
+    pt->error = 0; // clear error flag;
+    debug("ISSUE_READ: %08lx, length = %ld\n", pt->address, (unsigned long)pt->length);
+    return true;
+}
+
+bool pt_read_param_check(void) {
+    if (pt->buffer == NULL)
+        return false;
+    if (pt->length == 0)
+        return false;
+    if (pt->address >= FLASH_SIZE)
+        return false;
+    // FLASH末尾を超えて読み込もうとする場合はエラーとする。
+    if (pt->length > FLASH_SIZE - pt->address)
+        return false;
+    return true;
+}
+
+// 8 バイトまたは残りを読み込む。読込みが終わると true を返す
+static bool pt_read_chunk_bytes(void) {
+    int n = pt->length - pt->count;
+    if (n > 8)
+        n = 8;
+    for (int i = 0; i < n; ++i) {
+        /* ダミーデータを送信してクロックを発生させる */
+        qmi_hw->direct_tx = 0xFF;
+
+        if (!qmi_wait_busy_clear()) {
+            pt->error = 6;
+            return true;
+        }
+
+        /* 受信FIFOにデータが届くまで待つ */
+        uint32_t start = time_us_32();
+
+        while (qmi_hw->direct_csr & QMI_DIRECT_CSR_RXEMPTY_BITS) {
+            if ((uint32_t)(time_us_32() - start) > FLASH_READ_TIMEOUT_US) {
+                pt->error = 7;
+                return true;
+            }
+        }
+
+        pt->buffer[pt->count++] = (uint8_t)qmi_hw->direct_rx;
+    }
+    return pt->count >= pt->length;
+}
+
+static void pt_qmi_flash_read_poll_body(void) {
+    PT_BEGIN(pt);
+    if (pt->command != CMD_READ) {
+        return;
+    }
+    //
+    sample_index = 0;
+    // start erase
+    pt->error = 0;
+    if (pt_read_param_check() == false)
+        goto error1;
+    if (!qmi_direct_mode_start())
+        goto error1;
+    // 以後のエラー脱出は error に飛ぶ。
+    // Flash が前の処理を実行中でないことを確認する。
+    PT_WAIT_UNTIL_L(pt, pt_context_sr1_ready(), WAIT_PREV_CMD_COMPLETE_IN_READ);
+    if (pt->error)
+        goto error;
+    // Read: 02h + 24-bit address + data
+    qmi_hw->direct_csr |= QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
+
+    if (!qmi_flash_write_byte(CMD_READ_DATA) ||
+        !qmi_flash_write_byte((uint8_t)(pt->address >> 16)) ||
+        !qmi_flash_write_byte((uint8_t)(pt->address >> 8)) ||
+        !qmi_flash_write_byte((uint8_t)pt->address)) {
+        goto error;
+    }
+    // read data
+    pt->count = 0;
+    // 8バイト単位で読み込む(pt_read_chunk_bytes())を、データが
+    // 尽きるまで繰り返す。
+    PT_WAIT_UNTIL_L(pt, pt_read_chunk_bytes(), READ_BYTES);
+    if (pt->error)
+        goto error;
+    if (!qmi_wait_not_busy()) {
+        goto error;
+    }
+    // CS を解除する。
+    qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
+
+done:
+    if (!qmi_direct_mode_stop()) {
+        pt->error = 1;
+    }
+    goto finalize;
+
+error:
+    (void)qmi_wait_not_busy();
+    qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
+    qmi_direct_mode_stop();
+error1:
+    if (pt->error == 0)
+        pt->error = 1;
+    goto finalize;
+
+finalize:
+    pt->command = 0;
+    pt->done = true;
+    PT_END(pt);
+}
+
+static void pt_qmi_flash_read_poll(void) {
+    pt_qmi_flash_func_poll(pt_qmi_flash_read_poll_body);
+}
+
 //
+
+// -------------------------------------------------
 // overall poll
-//
-void pt_qmi_flash_poll(void)
-{
+// -------------------------------------------------
+void pt_qmi_flash_poll(void) {
     switch (pt->command) {
     case 0:
         break;
     case CMD_READ:
-        break; // not yet implemented
+        pt_qmi_flash_read_poll();
+        break;
     case CMD_ERASE:
-        pt_qmi_flash_erase_4k_poll(); break;
+        pt_qmi_flash_erase_4k_poll();
+        break;
     case CMD_PROGRAM:
-        pt_qmi_flash_program_page_poll(); break;
+        pt_qmi_flash_program_page_poll();
+        break;
     default:
-        printf("unexpected command %d\n", pt->command); break;
+        printf("unexpected command %d\n", pt->command);
+        break;
     }
 }
 

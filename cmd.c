@@ -251,6 +251,30 @@ static void command_read(const char *arg, int stable_flag) {
     message("Read completed.\n");
 }
 
+static void command_read_test(const char *arg, int async_flag) {
+    uint32_t address;
+    uint32_t offset;
+    uint32_t time0, time1, time2;
+
+    if (!parse_raw_flash_address(arg, false, &address))
+        return;
+
+    message("Reading buffer to Flash (TEST) 0x%08lX ...\n", (unsigned long)address);
+    while (!pt_issue_ready())
+        tight_loop_contents();
+    time1 = time_us_32();
+    if (!pt_issue_read(address, &flash_buffer[0], SECTOR_SIZE)) {
+        print_error("Write start failed\n");
+        return;
+    }
+    while (!pt_is_done())
+        tight_loop_contents();
+
+    time2 = time_us_32();
+    message("time2: %8ld\n", time2 - time1);
+    message("Write completed.\n");
+}
+
 // ------------------------------------------------------------
 // Erase
 // ------------------------------------------------------------
@@ -616,6 +640,12 @@ static void execute_command(char *line) {
             return;
         }
         command_read(argv[1], false);
+    } else if (strcmp(argv[0], "rr") == 0) {
+        if (argc != 2) {
+            print_error("Usage: rr ADDRESS");
+            return;
+        }
+        command_read_test(argv[1], false);
     } else if (strcmp(argv[0], "R") == 0) {
         if (argc != 2) {
             print_error("Usage: R ADDRESS");
