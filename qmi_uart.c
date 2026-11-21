@@ -58,7 +58,7 @@ __attribute__((noinline)) int __time_critical_func(main)(void) {
     qmi_init();
     while (1) {
         // tud_task();
-        pt_qmi_flash_erase_4k_poll();
+        pt_qmi_flash_poll();
         //tight_loop_contents();
     }
 

@@ -3,13 +3,17 @@
 // pt_qmi.h
 //
 
-// -----------------------------------------------------------------------------
-// W25Q32RV commands
-// -----------------------------------------------------------------------------
+//
+// start/poll command enums
+//
 
 #define CMD_ERASE 1
 #define CMD_READ 2
 #define CMD_PROGRAM 3
+
+// -----------------------------------------------------------------------------
+// W25Q32RV commands
+// -----------------------------------------------------------------------------
 
 #define CMD_READ_JEDEC_ID 0x9F
 #define CMD_READ_SR1 0x05
@@ -61,8 +65,11 @@ extern bool qmi_flash_wait_ready(uint32_t timeout_us);
 // poll and start
 //
 extern bool pt_issue_erase(uint32_t address);
-extern bool pt_is_erase_done(void);
+extern bool pt_issue_program(uint32_t address, uint8_t *buffer, uint32_t length);
+extern bool pt_is_done(void);
 extern bool pt_issue_ready(void);
 extern int  pt_error_code(void);
-extern void pt_qmi_flash_erase_4k_poll(void);
+//extern void pt_qmi_flash_erase_4k_poll(void);
+//extern void pt_qmi_flash_program_page_poll(void);
+extern void pt_qmi_flash_poll(void);
 extern void pt_dump_polltime(void);

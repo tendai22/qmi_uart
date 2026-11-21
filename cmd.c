@@ -317,7 +317,7 @@ static void command_erase_test(const char *arg) {
         print_error("pt_issue_erase: failed\n");
         return;
     }
-    while (!pt_is_erase_done())
+    while (!pt_is_done())
         tight_loop_contents();
 
     time2 = time_us_32();
@@ -374,6 +374,34 @@ static void command_write(const char *arg, int async_flag) {
             time2 = time_us_64();
             message("time2: %8lld\n", time2 - time0);
         }
+    }
+    message("Write completed.\n");
+}
+
+static void command_write_test(const char *arg, int async_flag) {
+    uint32_t address;
+    uint32_t offset;
+    uint64_t time0, time1, time2;
+
+    if (!parse_raw_flash_address(arg, false, &address))
+        return;
+
+    message("Writing buffer to Flash (TEST) 0x%08lX ...\n", (unsigned long)address);
+    // Page Program must not cross a 256-byte page boundary.
+    time0 = time_us_64();
+    for (offset = 0; offset < SECTOR_SIZE; offset += PAGE_SIZE) {
+        while (!pt_issue_ready())
+            tight_loop_contents();
+        time1 = time_us_64();
+        if (!pt_issue_program(address + offset, &flash_buffer[offset], PAGE_SIZE)) {
+            print_error("Write start failed\n");
+            return;
+        }
+        while (!pt_is_done())
+            tight_loop_contents();
+
+        time2 = time_us_64();
+        message("time2: %8lld\n", time2 - time1);
     }
     message("Write completed.\n");
 }
@@ -618,6 +646,12 @@ static void execute_command(char *line) {
             return;
         }
         command_write(argv[1], true);
+    } else if (strcmp(argv[0], "ww") == 0) {
+        if (argc != 2) {
+            print_error("Usage: ww ADDRESS");
+            return;
+        }
+        command_write_test(argv[1], true);
     } else if (strcmp(argv[0], "d") == 0) {
         uint32_t addr = 0, len = 256;
         if (argc > 3) {
