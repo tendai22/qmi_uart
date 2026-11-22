@@ -43,6 +43,7 @@ set(GEN_TABLE_PY
 # Protothread source files
 set(GEN_TABLE_SRC_FILES
     pt_qmi_common.c
+    pt_qmi_floppy.c
 )
 
 set(GENERATED_TABLE_SRCS)
@@ -105,7 +106,7 @@ add_custom_target(generate_pt_tables
 # Add executable. Default name is the project name, version 0.1
 
 add_executable(qmi_uart qmi_uart.c cmd.c memprt.c support.c
-                qmi_floppy.c pt_qmi_common.c
+                pt_qmi_common.c pt_qmi_floppy.c
                 qmi_flash.c qmi_flash_sync.c qmi_flash_async.c
                 ${GENERATED_TABLE_SRCS})
 

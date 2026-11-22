@@ -186,15 +186,15 @@ static void pt_qmi_flash_func_poll(pt_body_func_t body_func) {
     if (old_line != 0 || pt->line != 0) {
         if (old_line != pt->line) {
             elapsed = now - start;
-            debug("%s -> %s: %lu us, count = %d\n", pt_label(old_line), pt_label(pt->line), (unsigned long)elapsed, total_count);
+            debug("%s -> %s: %lu us, count = %d\n", pt_qmi_common_label(old_line), pt_qmi_common_label(pt->line), (unsigned long)elapsed, total_count);
             start = now;
             total_count = 0;
         } else {
             total_count++;
         }
     }
-    pt_stats_enter(old_line);
-    pt_stats_leave(old_line, poll_elapsed);
+    pt_qmi_common_stats_enter(old_line);
+    pt_qmi_common_stats_leave(old_line, poll_elapsed);
 }
 
 void pt_qmi_flash_erase_4k_poll(void) {

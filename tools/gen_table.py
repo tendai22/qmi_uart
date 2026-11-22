@@ -1,211 +1,78 @@
 #!/usr/bin/env python3
-
-#
-# gen_table.py
-#
-# usage:
-#
-#   python gen_table.py foo.c foo_table.h foo_table.c
-#
-# source:
-#
-#   WAIT_UNTIL_L(cond, LABEL)
-#
-# generated:
-#
-#   enum pt_label_id_t
-#   pt_labels[]
-#   pt_label()
-#   pt_line_to_id()
-#
-
+"""Generate source-specific Protothread labels and poll statistics.
+Usage: gen_table.py foo.c foo_table.h foo_table.c
+"""
 import re
 import sys
 from pathlib import Path
 
 
-def parse_wait_labels(source_text):
-    """
-    WAIT_UNTIL_L(..., LABEL)
-    の LABEL と行番号を抽出する。
-    """
-
+def parse_wait_labels(source):
     entries = []
-    pattern = re.compile(r'WAIT_UNTIL_L\s*\(', re.MULTILINE)
-
-    pos = 0
-    while True:
-        m = pattern.search(source_text, pos)
-        if not m:
-            break
-        start = m.start()
-        depth = 1
-        i = m.end()
-        while i < len(source_text):
-            ch = source_text[i]
-            if ch == '(':
-                depth += 1
-            elif ch == ')':
-                depth -= 1
-                if depth == 0:
-                    break
-            i += 1
-        block = source_text[m.end():i]
-        lineno = source_text.count('\n', 0, start) + 1
-        parts = block.rsplit(',', 1)
-
-        if len(parts) != 2:
-            raise RuntimeError(f"cannot parse WAIT_UNTIL_L at line {lineno}")
-
-        label = parts[1].strip()
-        label = re.sub(r'\s+', '', label)
-        entries.append((lineno, label))
-        pos = i
-
+    # Macro calls must start on a single source line, as agreed.
+    for lineno, line in enumerate(source.splitlines(), 1):
+        match = re.search(r'\bPT_WAIT_UNTIL_L\s*\(.*?,\s*([A-Za-z_]\w*)\s*\)\s*;', line)
+        if match:
+            entries.append((lineno, match.group(1)))
+    if len({name for _, name in entries}) != len(entries):
+        raise ValueError('Duplicate PT_WAIT_UNTIL_L label in source')
     return entries
 
 
-def write_header(outfile, entries):
-    labels = [x[1] for x in entries]
-    with open(outfile, "w", encoding="utf-8") as f:
-        f.write("#pragma once\n\n")
-        f.write("#include <stdint.h>\n\n")
-        f.write("typedef enum\n")
-        f.write("{\n")
-        f.write("    PTLBL_START,\n")
-        for label in labels:
-            f.write(f"    PTLBL_{label},\n")
+def generate(src, hdr, csrc):
+    entries = parse_wait_labels(src.read_text(encoding='utf-8'))
+    prefix = src.stem
+    if not re.fullmatch(r'[A-Za-z_]\w*', prefix):
+        raise ValueError('Invalid source basename')
+    upper = prefix.upper()
+    enum = f'{prefix}_label_id_t'
+    struct = f'{prefix}_label_t'
+    labels = f'{prefix}_labels'
+    count = f'{prefix}_labels_count'
+    lookup = f'{prefix}_label'
+    enter = f'{prefix}_stats_enter'
+    leave = f'{prefix}_stats_leave'
+    dump = f'{prefix}_stats_dump'
+    head = ['#pragma once', '#include <stdint.h>',
+            f'typedef enum {{ {upper}_LBL_START,']
+    head += [f'    {upper}_LBL_{label},' for _, label in entries]
+    head += [f'    {upper}_LBL_DONE, {upper}_LBL_COUNT', f'}} {enum};',
+             f'typedef struct {{ int line; {enum} id; const char *name; }} {struct};',
+             f'extern const {struct} {labels}[];',
+             f'extern const uint32_t {count};',
+             f'const char *{lookup}(int line);',
+             f'void {enter}(int line);',
+             f'void {leave}(int line, uint64_t elapsed_us);',
+             f'void {dump}(void);']
+    hdr.write_text('\n'.join(head) + '\n', encoding='utf-8')
+    rows = [(0, 'START')] + entries + [(-1, 'DONE')]
+    idof = lambda name: f'{upper}_LBL_{name}'
+    body = [f'#include "{hdr.name}"', '#include "memprt.h"',
+            'typedef struct { uint32_t count; uint64_t total_us; } pt_stat_t;',
+            f'static pt_stat_t stats[{upper}_LBL_COUNT];',
+            f'const {struct} {labels}[] = {{']
+    body += [f'    {{ {line}, {idof(name)}, "{name}" }},' for line, name in rows]
+    body += ['};', f'const uint32_t {count} = sizeof({labels})/sizeof({labels}[0]);',
+             f'const char *{lookup}(int line) {{ switch(line) {{']
+    body += [f'case {line}: return "{name}";' for line, name in rows]
+    body += ['default: return "?"; } }',
+             f'static {enum} line_to_id(int line) {{ switch(line) {{']
+    body += [f'case {line}: return {idof(name)};' for line, name in rows]
+    body += [f'default: return {upper}_LBL_COUNT; }} }}',
+             f'void {enter}(int line) {{ {enum} id = line_to_id(line);',
+             f'if (id < {upper}_LBL_COUNT) stats[id].count++; }}',
+             f'void {leave}(int line, uint64_t us) {{ {enum} id = line_to_id(line);',
+             f'if (id < {upper}_LBL_COUNT) stats[id].total_us += us; }}',
+             f'void {dump}(void) {{ for (uint32_t i=0; i<{count}; ++i) {{',
+             f'const {struct} *p = &{labels}[i];',
+             'pt_stat_t *s = &stats[p->id];',
+             'debug("%-28s count=%lu total=%llu us\\n", p->name,',
+             '(unsigned long)s->count, (unsigned long long)s->total_us);',
+             '} }']
+    csrc.write_text('\n'.join(body) + '\n', encoding='utf-8')
 
-        f.write("    PTLBL_DONE,\n")
-        f.write("    PTLBL_COUNT\n")
-        f.write("} pt_label_id_t;\n\n")
 
-        f.write("typedef struct\n")
-        f.write("{\n")
-        f.write("    int line;\n")
-        f.write("    pt_label_id_t id;\n")
-        f.write("    const char *name;\n")
-        f.write("} pt_label_t;\n\n")
-
-        f.write("extern const pt_label_t pt_labels[];\n")
-        f.write("extern const uint32_t pt_labels_count;\n\n")
-        f.write("const char *pt_label(int line);\n")
-        f.write("void pt_stats_enter(int line);\n")
-        f.write("void pt_stats_leave(int line, uint64_t elapsed_us);\n")
-        f.write("void pt_stats_dump(void);\n")
-
-def write_source(outfile, entries):
-    labels = [x[1] for x in entries]
-    header_name = Path(outfile).with_suffix(".h").name
-
-    with open(outfile, "w", encoding="utf-8") as f:
-        f.write(f'#include "{header_name}"\n')
-        f.write('#include "memprt.h"\n\n')
-        f.write("typedef struct\n")
-        f.write("{\n")
-        f.write("    uint32_t count;\n")
-        f.write("    uint64_t total_us;\n")
-        f.write("} pt_stat_t;\n\n")
-        f.write("static pt_stat_t stats[PTLBL_COUNT];\n\n")
-
-        #
-        # pt_labels[]
-        #
-        f.write("const pt_label_t pt_labels[] =\n{\n")
-        f.write('    { 0, PTLBL_START, "START" },\n')
-
-        for lineno, label in entries:
-            f.write(f'    {{ {lineno}, PTLBL_{label}, "{label}" }},\n')
-
-        f.write('    { -1, PTLBL_DONE, "DONE" },\n')
-        f.write("};\n\n")
-        f.write("const uint32_t pt_labels_count =\n")
-        f.write("    sizeof(pt_labels)/sizeof(pt_labels[0]);\n\n")
-
-        #
-        # pt_label()
-        #
-        f.write("const char *pt_label(int line)\n")
-        f.write("{\n")
-        f.write("    switch(line)\n")
-        f.write("    {\n")
-        f.write('    case 0: return "START";\n')
-
-        for lineno, label in entries:
-            f.write(f'    case {lineno}: return "{label}";\n')
-
-        f.write('    case -1: return "DONE";\n')
-        f.write('    default: return "?";\n')
-        f.write("    }\n")
-        f.write("}\n\n")
-
-        #
-        # pt_line_to_id()
-        #
-        f.write("static pt_label_id_t pt_line_to_id(int line)\n")
-        f.write("{\n")
-        f.write("    switch(line)\n")
-        f.write("    {\n")
-        f.write("    case 0:\n")
-        f.write("        return PTLBL_START;\n")
-
-        for lineno, label in entries:
-            f.write(f"    case {lineno}:\n")
-            f.write(f"        return PTLBL_{label};\n")
-
-        f.write("    case -1:\n")
-        f.write("        return PTLBL_DONE;\n")
-        f.write("    default:\n")
-        f.write("        return PTLBL_COUNT;\n")
-        f.write("    }\n")
-        f.write("}\n\n")
-
-        #
-        # statistics
-        #
-        f.write("void pt_stats_enter(int line)\n")
-        f.write("{\n")
-        f.write("    pt_label_id_t id = pt_line_to_id(line);\n")
-        f.write("    if(id >= PTLBL_COUNT)\n")
-        f.write("        return;\n")
-        f.write("    stats[id].count++;\n")
-        f.write("}\n\n")
-        f.write("void pt_stats_leave(int line, uint64_t elapsed_us)\n")
-        f.write("{\n")
-        f.write("    pt_label_id_t id = pt_line_to_id(line);\n")
-        f.write("    if(id >= PTLBL_COUNT)\n")
-        f.write("        return;\n")
-        f.write("    stats[id].total_us += elapsed_us;\n")
-        f.write("}\n\n")
-        f.write("void pt_stats_dump(void)\n")
-        f.write("{\n")
-        f.write("    for(uint32_t i=0; i<pt_labels_count; i++)\n")
-        f.write("    {\n")
-        f.write("        const pt_label_t *p = &pt_labels[i];\n")
-        f.write("        pt_stat_t *s = &stats[p->id];\n")
-        f.write('        debug("%-20s count=%lu total=%llu us",\n')
-        f.write("              p->name,\n")
-        f.write("              (unsigned long)s->count,\n")
-        f.write("              s->total_us);\n")
-        f.write("    }\n")
-        f.write("}\n")
-
-def main():
+if __name__ == '__main__':
     if len(sys.argv) != 4:
-        print("usage: gen_table.py foo.c foo_table.h foo_table.c")
-        sys.exit(1)
-
-    src = Path(sys.argv[1])
-    hdr = Path(sys.argv[2])
-    csrc = Path(sys.argv[3])
-
-    text = src.read_text(encoding="utf-8")
-    entries = parse_wait_labels(text)
-    write_header(hdr, entries)
-    write_source(csrc, entries)
-    print("generated:")
-    print(" ", hdr)
-    print(" ", csrc)
-
-if __name__ == "__main__":
-    main()
+        sys.exit('usage: gen_table.py foo.c foo_table.h foo_table.c')
+    generate(*(Path(x) for x in sys.argv[1:]))
