@@ -8,6 +8,7 @@
 #include "memprt.h"
 #include "protothread.h"
 #include "pt_qmi.h"
+#include "qmi_flash.h"
 #include "pt_qmi_floppy.h"
 #include "pt_qmi_floppy_table.h"
 

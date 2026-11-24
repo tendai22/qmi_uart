@@ -3,9 +3,9 @@
 // qmi_flash.h ... 共通定義
 //
 
-#include <stdint.h>
-#include <stddef.h>
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 // --------------------------------------------
 // QMI clock/timeout constant parameters
@@ -45,8 +45,10 @@
 #define SR2_QE_MASK 0x02
 
 //
+// qmi lower error, shared with qmi_error.h
 //
-//
+#include "qmi_error.h"
+
 // W25Q32RV の最大処理時間より余裕を持たせたタイムアウト。
 // 実際のタイムアウト値はデータシートや実測に応じて調整する。
 #define FLASH_ERASE_TIMEOUT_US 5000000u
@@ -63,8 +65,7 @@ typedef enum {
     FLASH_OP_PROGRAM
 } flash_operation_t;
 
-typedef enum
-{
+typedef enum {
     QMI_FLASH_POLL_BUSY = 0,
     QMI_FLASH_POLL_DONE,
     QMI_FLASH_POLL_ERROR
@@ -97,13 +98,22 @@ extern bool qmi_direct_mode_start(void);
 extern bool qmi_direct_mode_stop(void);
 extern bool qmi_flash_read_register(uint8_t command, uint8_t *buffer, size_t length);
 extern bool qmi_wait_busy_clear(void);
-extern bool qmi_flash_read_data(uint32_t address, uint8_t *buffer, size_t length);
+
 extern bool qmi_flash_write_byte(uint8_t data);
 extern bool qmi_flash_write_enable(void);
+// Flashアドレス範囲の判定。
+// qmi_lower_errorは更新しない。
 extern bool qmi_flash_check_range(uint32_t address, size_t length);
-extern bool qmi_flash_status_ready(bool *ready);
+// SR1 BUSY解除待ちの判定関数。
+// false: SR1 BUSY継続中。待ちを継続する。
+// true : SR1 BUSY解除、またはSR1読み出し異常。
+//        呼び出し側は直ちにqmi_error()を取得し、
+//        正常終了か異常終了かを判定すること。
+extern bool qmi_flash_status_ready(void);
+
 extern bool qmi_flash_begin_write(void);
 extern void qmi_flash_set_operation(flash_operation_t operation, uint32_t timeout_us);
 extern bool qmi_flash_wait_ready(uint32_t timeout_us);
-
-
+// エラーコードの非破壊読み出し。
+// 呼び出しによってqmi_lower_errorは変化しない。
+extern int qmi_error(void);

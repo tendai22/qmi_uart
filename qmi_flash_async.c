@@ -665,16 +665,18 @@ qmi_flash_poll_result_t qmi_flash_erase_4k_poll_body(void) {
         if (!qmi_direct_mode_start()) {
             return QMI_FLASH_POLL_ERROR;
         }
-        bool read_ok = qmi_flash_status_ready(&ready);
-        bool stop_ok = qmi_direct_mode_stop();
-        if (!read_ok || !stop_ok) {
+        bool flag = qmi_flash_status_ready();
+        qmi_direct_mode_stop();
+        if (qmi_error() != 0) {
             flash_operation = FLASH_OP_NONE;
             return QMI_FLASH_POLL_ERROR;
         }
 
-        if (!ready) {
+        if (!flag) {
+            // not yet read sr1
             return QMI_FLASH_POLL_BUSY;
         }
+        // now SR1 not BUSY, command successfully completed.
         PROGRAM_SET_STATE(PROGRAM_STATE_DONE);
         return QMI_FLASH_POLL_BUSY;
 

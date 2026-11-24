@@ -1,5 +1,5 @@
 //
-// pt_qmi_common.c
+// pt_qmi_flash.c
 //
 
 #include <stdbool.h>
@@ -18,8 +18,10 @@
 #include "conf.h"
 #include "memprt.h"
 #include "pt_qmi.h"
+#include "qmi_flash.h"
 
-#include "pt_qmi_common_table.h"
+#include "pt_qmi_flash_table.h"
+
 
 //
 // pt_context ... erase/program_page/read 共通のコンテキスト
@@ -36,6 +38,9 @@ static struct pt_context {
     uint8_t *buffer;
     uint32_t count;
     uint32_t length;
+    // SR1 BUSY待ちのタイムアウト管理
+    uint32_t wait_start_us;
+    uint32_t wait_timeout_us;
 } pt_body;
 
 static struct pt_context *pt = &pt_body;
@@ -70,14 +75,26 @@ bool pt_issue_ready(void) {
     return pt->command == 0;
 }
 
+//
+// pt_sr1_wait_start(timeout_us)
+// sr1待ちの開始時に呼び出しタイムアウト値を設定する。
+static void pt_sr1_wait_start(uint32_t timeout_us) {
+    pt->wait_start_us = time_us_32();
+    pt->wait_timeout_us = timeout_us;
+}
+
 bool pt_context_sr1_ready(void) {
-    bool ready;
-    if (!qmi_flash_status_ready(&ready)) {
-        pt->error = 4;
+    if (qmi_flash_status_ready()) {
+        pt->error = qmi_error();
         return true;
     }
-    // sr1 has read and ready has valid data
-    return ready;
+
+    if ((uint32_t)(time_us_32() - pt->wait_start_us) >= pt->wait_timeout_us) {
+        pt->error = QMI_ERR_TIMEOUT;
+        return true;
+    }
+
+    return false;
 }
 //
 // polling functions
@@ -101,25 +118,31 @@ static uint32_t sample_index = 0;
 static void pt_qmi_flash_erase_4k_poll_body(void) {
     PT_BEGIN(pt);
     if (pt->command != CMD_ERASE) {
+        pt->error = QMI_ERR_COMMAND;
         return;
     }
-    //
-    sample_index = 0;
     // start erase
+    sample_index = 0;
     pt->error = 0;
-    if (pt_context_param_check(pt) == false)
+    if (pt_context_param_check(pt) == false) {
+        pt->error = QMI_ERR_PARAM;
         goto error1;
+    }
 
-    if (!qmi_direct_mode_start())
+    if (!qmi_direct_mode_start()) {
+        pt->error = qmi_error();
         goto error1;
+    }
     // 以後のエラー脱出は error に飛ぶ。
     // Flash が前の処理を実行中でないことを確認する。
+    pt_sr1_wait_start(FLASH_ERASE_TIMEOUT_US);
     PT_WAIT_UNTIL_L(pt, pt_context_sr1_ready(), WAIT_PREV_CMD_COMPLETE);
     if (pt->error)
         goto error;
 
     //  WREN
     if (!qmi_flash_write_enable()) {
+        pt->error = qmi_error();
         goto error;
     }
     // Sector Erase: 20h + 24-bit address
@@ -129,23 +152,23 @@ static void pt_qmi_flash_erase_4k_poll_body(void) {
         !qmi_flash_write_byte((uint8_t)(pt->address >> 16)) ||
         !qmi_flash_write_byte((uint8_t)(pt->address >> 8)) ||
         !qmi_flash_write_byte((uint8_t)pt->address)) {
+        pt->error = qmi_error();
         goto error;
     }
     if (!qmi_wait_not_busy()) {
+        pt->error = qmi_error();
         goto error;
     }
     // CS を High にして Erase を開始させる。
     qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
     // Erase 完了待ち
-    // PT_WAIT_UNTIL_L(pt, !pt_context_sr1_ready(), WAIT_START_ERASE);
-    // if (pt->error)
-    //    goto error;
+    pt_sr1_wait_start(FLASH_ERASE_TIMEOUT_US);
     PT_WAIT_UNTIL_L(pt, pt_context_sr1_ready(), WAIT_ERASE_COMP);
     if (pt->error)
         goto error;
 done:
     if (!qmi_direct_mode_stop()) {
-        pt->error = 1;
+        pt->error = qmi_error();
     }
     goto finalize;
 
@@ -155,7 +178,7 @@ error:
     qmi_direct_mode_stop();
 error1:
     if (pt->error == 0)
-        pt->error = 1;
+        pt->error = QMI_ERR_INTERNAL;
     goto finalize;
 
 finalize:
@@ -186,15 +209,15 @@ static void pt_qmi_flash_func_poll(pt_body_func_t body_func) {
     if (old_line != 0 || pt->line != 0) {
         if (old_line != pt->line) {
             elapsed = now - start;
-            debug("%s -> %s: %lu us, count = %d\n", pt_qmi_common_label(old_line), pt_qmi_common_label(pt->line), (unsigned long)elapsed, total_count);
+            debug("%s -> %s: %lu us, count = %d\n", pt_qmi_flash_label(old_line), pt_qmi_flash_label(pt->line), (unsigned long)elapsed, total_count);
             start = now;
             total_count = 0;
         } else {
             total_count++;
         }
     }
-    pt_qmi_common_stats_enter(old_line);
-    pt_qmi_common_stats_leave(old_line, poll_elapsed);
+    pt_qmi_flash_stats_enter(old_line);
+    pt_qmi_flash_stats_leave(old_line, poll_elapsed);
 }
 
 void pt_qmi_flash_erase_4k_poll(void) {
@@ -246,7 +269,7 @@ static bool pt_write_chunk_bytes(void) {
         n = 8;
     for (int i = 0; i < n; ++i) {
         if (!qmi_flash_write_byte(pt->buffer[pt->count])) {
-            pt->error = 5;
+            pt->error = qmi_error();
             return true; // PT_WAITを抜けてエラー処理へ
         }
         pt->count++;
@@ -257,24 +280,28 @@ static bool pt_write_chunk_bytes(void) {
 void pt_qmi_flash_program_page_poll_body(void) {
     PT_BEGIN(pt);
     if (pt->command != CMD_PROGRAM) {
+        pt->error = QMI_ERR_COMMAND;
         return;
     }
-    //
+    // start program_page
     sample_index = 0;
-    // start erase
     pt->error = 0;
     if (pt_program_page_param_check() == false)
         goto error1;
-    if (!qmi_direct_mode_start())
+    if (!qmi_direct_mode_start()) {
+        pt->error = qmi_error();
         goto error1;
+    }
     // 以後のエラー脱出は error に飛ぶ。
     // Flash が前の処理を実行中でないことを確認する。
+    pt_sr1_wait_start(FLASH_ERASE_TIMEOUT_US);
     PT_WAIT_UNTIL_L(pt, pt_context_sr1_ready(), WAIT_PREV_CMD_COMPLETE_IN_PROGRAM);
     if (pt->error)
         goto error;
 
     //  WREN
     if (!qmi_flash_write_enable()) {
+        pt->error = qmi_error();
         goto error;
     }
     // Page Program: 02h + 24-bit address + data
@@ -284,6 +311,7 @@ void pt_qmi_flash_program_page_poll_body(void) {
         !qmi_flash_write_byte((uint8_t)(pt->address >> 16)) ||
         !qmi_flash_write_byte((uint8_t)(pt->address >> 8)) ||
         !qmi_flash_write_byte((uint8_t)pt->address)) {
+        pt->error = qmi_error();
         goto error;
     }
 
@@ -296,18 +324,20 @@ void pt_qmi_flash_program_page_poll_body(void) {
         goto error;
 
     if (!qmi_wait_not_busy()) {
+        pt->error = qmi_error();
         goto error;
     }
     // CS を High にして PROGRAM を開始させる。
     qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
 
     // デバイス内部の PROGRAM 完了を待つ
+    pt_sr1_wait_start(FLASH_PROGRAM_TIMEOUT_US);
     PT_WAIT_UNTIL_L(pt, pt_context_sr1_ready(), WAIT_PROGRAM_COMP);
     if (pt->error)
         goto error;
 done:
     if (!qmi_direct_mode_stop()) {
-        pt->error = 1;
+        pt->error = qmi_error();
     }
     goto finalize;
 
@@ -317,7 +347,7 @@ error:
     qmi_direct_mode_stop();
 error1:
     if (pt->error == 0)
-        pt->error = 1;
+        pt->error = QMI_ERR_INTERNAL;
     goto finalize;
 
 finalize:
@@ -374,7 +404,7 @@ static bool pt_read_chunk_bytes(void) {
         qmi_hw->direct_tx = 0xFF;
 
         if (!qmi_wait_busy_clear()) {
-            pt->error = 6;
+            pt->error = qmi_error();
             return true;
         }
 
@@ -382,8 +412,8 @@ static bool pt_read_chunk_bytes(void) {
         uint32_t start = time_us_32();
 
         while (qmi_hw->direct_csr & QMI_DIRECT_CSR_RXEMPTY_BITS) {
-            if ((uint32_t)(time_us_32() - start) > FLASH_READ_TIMEOUT_US) {
-                pt->error = 7;
+            if ((uint32_t)(time_us_32() - start) >= FLASH_READ_TIMEOUT_US) {
+                pt->error = QMI_ERR_TIMEOUT;
                 return true;
             }
         }
@@ -398,20 +428,26 @@ static void pt_qmi_flash_read_poll_body(void) {
     if (pt->command != CMD_READ) {
         return;
     }
-    //
+    // start read
     sample_index = 0;
-    // start erase
     pt->error = 0;
-    if (pt_read_param_check() == false)
+    if (pt_read_param_check() == false) {
+        pt->error = QMI_ERR_PARAM;
         goto error1;
-    if (!qmi_direct_mode_start())
+    }
+    if (!qmi_direct_mode_start()) {
+        pt->error = qmi_error();
         goto error1;
+    }
     // 以後のエラー脱出は error に飛ぶ。
     // Flash が前の処理を実行中でないことを確認する。
+    pt_sr1_wait_start(FLASH_ERASE_TIMEOUT_US);
     PT_WAIT_UNTIL_L(pt, pt_context_sr1_ready(), WAIT_PREV_CMD_COMPLETE_IN_READ);
-    if (pt->error)
+    if (pt->error) {
+        pt->error = QMI_ERR_PARAM;
         goto error;
-    // Read: 02h + 24-bit address + data
+    }
+    // Read: 03h + 24-bit address + data
     qmi_hw->direct_csr |= QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
 
     if (!qmi_flash_write_byte(CMD_READ_DATA) ||

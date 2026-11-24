@@ -362,3 +362,4 @@ bool qmi_flash_read(uint32_t address, uint8_t *buffer, size_t length) {
 }
 
 #endif //USE_STUB
+

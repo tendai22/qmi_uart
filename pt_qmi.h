@@ -42,8 +42,14 @@
 #define FLASH_READ_TIMEOUT_US 100000u
 
 //
+// Error code: qmi lower level routine
+//
+#include "qmi_error.h"
+
+//
 // common service function
 //
+#if 0
 extern void qmi_dump_registers(const char *label);
 extern bool qmi_wait_not_busy(void);
 extern bool qmi_wait_tx_ready(void);
@@ -60,6 +66,7 @@ extern bool qmi_flash_status_ready(bool *ready);
 extern bool qmi_flash_begin_write(void);
 //extern void qmi_flash_set_operation(flash_operation_t operation, uint32_t timeout_us);
 extern bool qmi_flash_wait_ready(uint32_t timeout_us);
+#endif
 
 //
 // poll and start

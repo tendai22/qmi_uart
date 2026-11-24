@@ -27,20 +27,14 @@ extern void qmi_stub_init(void);
 #endif
 
 //
-// common globals
 //
-flash_operation_t flash_operation = FLASH_OP_NONE;
-
-uint32_t flash_operation_start_us;
-uint32_t flash_operation_timeout_us;
-
-// -----------------------------------------------------------------------------
-// QMI Direct Mode
-// -----------------------------------------------------------------------------
-
+//
 static uint32_t sys_hz;
 static uint32_t qmi_clkdiv;
 
+//
+//
+//
 typedef struct
 {
     uint8_t command;
@@ -51,6 +45,21 @@ typedef struct
 
 static qmi_diag_t qmi_diag[4];
 static unsigned int qmi_diag_count = 0;
+
+//
+// error code
+//
+static int qmi_lower_error = 0;
+
+//
+// common globals
+//
+flash_operation_t flash_operation = FLASH_OP_NONE;
+
+uint32_t flash_operation_start_us;
+uint32_t flash_operation_timeout_us;
+
+
 
 // -----------------------------------------------------------------------------
 // QMI diagnostic
@@ -73,19 +82,31 @@ extern void qmi_dump_registers(const char *label) {
     printf("    RXDELAY  = %lu\n", (unsigned long)((csr & QMI_DIRECT_CSR_RXDELAY_BITS) >> QMI_DIRECT_CSR_RXDELAY_LSB));
 }
 
+//
+// error code
+//
+int qmi_error(void) {
+    return qmi_lower_error;
+}
+
 // -----------------------------------------------------------------------------
 // QMI wait helpers
 // -----------------------------------------------------------------------------
 
+// return value:
+// true:  normal done
+// talse: error timeout
 extern bool qmi_wait_not_busy(void) {
     uint32_t time0 = time_us_32();
     for (uint32_t i = 0; i < QMI_TIMEOUT_COUNT; ++i) {
         if ((qmi_hw->direct_csr & QMI_DIRECT_CSR_BUSY_BITS) == 0) {
+            qmi_lower_error = 0;
             return true;
         }
         tight_loop_contents();
     }
     debug("not_busy timeout: %ld\n", (unsigned long)(time_us_32() - time0));
+    qmi_lower_error = QMI_ERR_TIMEOUT;
     return false;
 }
 
@@ -93,21 +114,25 @@ extern bool qmi_wait_tx_ready(void) {
     uint32_t time0 = time_us_32();
     for (uint32_t i = 0; i < QMI_TIMEOUT_COUNT; ++i) {
         if ((qmi_hw->direct_csr & QMI_DIRECT_CSR_TXFULL_BITS) == 0) {
+            qmi_lower_error = 0;
             return true;
         }
         tight_loop_contents();
     }
     debug("tx_ready timeout: %ld\n", (unsigned long)(time_us_32() - time0));
+    qmi_lower_error = QMI_ERR_TIMEOUT;
     return false;
 }
 
 extern bool qmi_wait_rx_ready(void) {
     for (uint32_t i = 0; i < QMI_TIMEOUT_COUNT; ++i) {
         if ((qmi_hw->direct_csr & QMI_DIRECT_CSR_RXEMPTY_BITS) == 0) {
+            qmi_lower_error = 0;
             return true;
         }
         tight_loop_contents();
     }
+    qmi_lower_error = QMI_ERR_TIMEOUT;
     return false;
 }
 
@@ -127,8 +152,10 @@ extern bool qmi_direct_mode_start(void) {
     // Direct Mode 有効化時点ですでに進行中だった XIP 転送が
     // 完了するのを待つ。
     if (!qmi_wait_not_busy()) {
+        qmi_lower_error = QMI_ERR_TIMEOUT;
         return false;
     }
+    qmi_lower_error = 0;
     return true;
 }
 
@@ -141,6 +168,7 @@ extern bool qmi_direct_mode_stop(void) {
     qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
     // Direct Mode を解除する。
     qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_EN_BITS;
+    qmi_lower_error = 0;
     return true;
 }
 
@@ -151,6 +179,7 @@ extern bool qmi_direct_mode_stop(void) {
 extern bool qmi_flash_read_register(uint8_t command, uint8_t *buffer, size_t length) {
     uint32_t time0 = time_us_32();
     if (buffer == NULL || length == 0) {
+        qmi_lower_error = QMI_ERR_PARAM;
         return false;
     }
     if (!qmi_wait_not_busy()) {
@@ -183,6 +212,7 @@ extern bool qmi_flash_read_register(uint8_t command, uint8_t *buffer, size_t len
 
     // CS0n が実際に Assert されたか確認
     if ((qmi_hw->direct_csr & QMI_DIRECT_CSR_ASSERT_CS0N_BITS) == 0) {
+        qmi_lower_error = QMI_ERR_INTERNAL;
         goto error;
     }
     // コマンド送信
@@ -225,7 +255,9 @@ extern bool qmi_flash_read_register(uint8_t command, uint8_t *buffer, size_t len
     qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
     return true;
 error:
+    int saved_error = qmi_error();
     (void)qmi_wait_not_busy();
+    qmi_lower_error = saved_error;
     qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
     return false;
 }
@@ -235,9 +267,11 @@ extern bool qmi_wait_busy_clear(void) {
 
     while (qmi_hw->direct_csr & QMI_DIRECT_CSR_BUSY_BITS) {
         if ((uint32_t)(time_us_32() - start) > FLASH_READ_TIMEOUT_US) {
+            qmi_lower_error = QMI_ERR_TIMEOUT;
             return false;
         }
     }
+    qmi_lower_error = 0;
     return true;
 }
 
@@ -262,6 +296,7 @@ void qmi_init(void) {
 #if defined(USE_STUB)
     qmi_stub_init();
 #endif
+    qmi_lower_error = 0;
 }
 
 // -----------------------------------------------------------------------------
@@ -306,7 +341,9 @@ bool qmi_flash_write_enable(void) {
     return true;
 
 error:
+    int saved_error = qmi_error();
     (void)qmi_wait_not_busy();
+    qmi_lower_error = saved_error;
     qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
     return false;
 }
@@ -315,39 +352,43 @@ bool qmi_flash_check_range(uint32_t address, size_t length) {
     return address < FLASH_SIZE && length <= FLASH_SIZE - address;
 }
 
-bool qmi_flash_status_ready(bool *ready) {
+bool qmi_flash_status_ready(void) {
     uint8_t sr1 = 0;
+    qmi_lower_error = 0;
+    if (!qmi_flash_read_register(CMD_READ_SR1, &sr1, 1)) {
+        // read_register が false で戻るのは、デバイスステータス
+        // 読み出しエラーを現わす。status_ready 関数は
+        // 上位層が SR1 BUSY が解除されるまで待つ際の判定関数として
+        // 呼び出されるので、false, false, ..., 最後に true を返して
+        // 来ることを期待している。異常終了の場合も
+        // 上位層では待ちを終えるべきなので、true を返して、qmi_error()
+        // 呼び出しでエラーかどうかを判定する。
+        return true;
+    }
 
-    if (ready == NULL)
-        return false;
-    *ready = false;
-
-    if (!qmi_flash_read_register(CMD_READ_SR1, &sr1, 1))
-        return false;
-
-    *ready = ((sr1 & SR1_BUSY_MASK) == 0);
-    return true;
+    // SR1 BUSY の間は false, BUSYでなくなると true を返す。
+    return (sr1 & SR1_BUSY_MASK) == 0;
 }
 
 bool qmi_flash_begin_write(void) {
-    bool ready = false;
 
     flash_start_xip();
 
     if (!qmi_direct_mode_start())
         return false;
 
-    if (!qmi_flash_status_ready(&ready) || !ready) {
-        (void)qmi_direct_mode_stop();
-        return false;
-    }
+    if (!qmi_flash_wait_ready(FLASH_ERASE_TIMEOUT_US))
+        goto error;
 
     if (!qmi_flash_write_enable()) {
-        (void)qmi_direct_mode_stop();
-        return false;
+        goto error;
     }
-
     return true;
+error:
+    int saved_error = qmi_error();
+    (void)qmi_direct_mode_stop();
+    qmi_lower_error = saved_error;
+    return false;
 }
 
 void qmi_flash_set_operation(flash_operation_t operation, uint32_t timeout_us) {
@@ -375,163 +416,7 @@ bool qmi_flash_wait_ready(uint32_t timeout_us) {
             return true;
         }
     }
-
+    // timeout occurs
+    qmi_lower_error = QMI_ERR_TIMEOUT;
     return false;
-}
-
-// -----------------------------------------------------------------------------
-// qmi_flash_test
-// -----------------------------------------------------------------------------
-
-int qmi_flash_test(void) {
-    uint8_t flash_data[32] = {0};
-    bool flash_read_ok = false;
-
-    printf("========================================\n");
-    printf(" RP2350 QMI Direct Mode test\n");
-    printf(" W25Q32RV - Single SPI\n");
-    printf("========================================\n");
-
-    uint32_t actual_sck_hz = sys_hz / qmi_clkdiv;
-
-    printf("clk_sys       : %lu Hz\n", (unsigned long)sys_hz);
-    printf("QMI CLKDIV    : %lu\n", (unsigned long)qmi_clkdiv);
-    printf("QMI SCK       : %lu Hz (approx.)\n",
-           (unsigned long)actual_sck_hz);
-
-    // QSPIパッド、フラッシュデバイス、QMIを初期化する。
-    flash_start_xip();
-
-    // Direct Mode を有効にする。
-    if (!qmi_direct_mode_start()) {
-        printf("[ERROR] Failed to enter QMI Direct Mode.\n");
-        qmi_dump_registers("Direct Mode start failed");
-        while (true) {
-            sleep_ms(1000);
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // JEDEC ID
-    // -------------------------------------------------------------------------
-
-    uint8_t jedec_id[3] = {0};
-
-    bool jedec_ok = qmi_flash_read_register(CMD_READ_JEDEC_ID, jedec_id, sizeof(jedec_id));
-
-    // -------------------------------------------------------------------------
-    // Status Registers
-    // -------------------------------------------------------------------------
-
-    uint8_t sr1 = 0;
-    uint8_t sr2 = 0;
-    uint8_t sr3 = 0;
-
-    bool sr1_ok = qmi_flash_read_register(CMD_READ_SR1, &sr1, 1);
-    bool sr2_ok = qmi_flash_read_register(CMD_READ_SR2, &sr2, 1);
-    bool sr3_ok = qmi_flash_read_register(CMD_READ_SR3, &sr3, 1);
-
-    /* Read Data: address 0x000000, 32 bytes */
-    flash_read_ok = qmi_flash_read_data(0x000000, flash_data, sizeof(flash_data));
-
-    // -------------------------------------------------------------------------
-    // Direct Mode 終了
-    // -------------------------------------------------------------------------
-
-    bool stop_ok = qmi_direct_mode_stop();
-
-    // ここから printf してよい。
-    // Direct Mode 中は XIP メモリアクセスができないため、
-    // printf や通常のライブラリ関数を呼ばないこと。
-
-    printf("\n[QMI Transaction Diagnostics]\n");
-
-    for (unsigned int i = 0; i < qmi_diag_count && i < 4; ++i) {
-        printf("\n  Command : 0x%02X\n", qmi_diag[i].command);
-        printf("    CS asserted : 0x%08lX\n", (unsigned long)qmi_diag[i].csr_cs_assert);
-        printf("    Command done: 0x%08lX\n", (unsigned long)qmi_diag[i].csr_command_done);
-        printf("    Data done   : 0x%08lX\n", (unsigned long)qmi_diag[i].csr_data_done);
-        printf("    CS0 asserted: %s\n", (qmi_diag[i].csr_cs_assert & QMI_DIRECT_CSR_ASSERT_CS0N_BITS) ? "YES" : "NO");
-    }
-
-    printf("\n");
-
-    qmi_dump_registers("After Direct Mode");
-
-    printf("\n");
-    printf("========================================\n");
-    printf(" Read results\n");
-    printf("========================================\n");
-
-    // JEDEC ID
-    printf("\n[JEDEC ID]\n");
-
-    printf("  Read result : %s\n", jedec_ok ? "OK" : "FAILED");
-
-    if (jedec_ok) {
-        printf("  ID          : %02X %02X %02X\n",
-               jedec_id[0],
-               jedec_id[1],
-               jedec_id[2]);
-
-        bool id_match =
-            jedec_id[0] == EXPECTED_JEDEC_ID_0 &&
-            jedec_id[1] == EXPECTED_JEDEC_ID_1 &&
-            jedec_id[2] == EXPECTED_JEDEC_ID_2;
-
-        printf("  Expected    : EF 40 16\n");
-        printf("  Match       : %s\n", id_match ? "YES" : "NO");
-    }
-
-    // Status Register 1
-    printf("\n[Status Register 1 - 05h]\n");
-    printf("  Read result : %s\n", sr1_ok ? "OK" : "FAILED");
-
-    if (sr1_ok) {
-        printf("  SR1         : 0x%02X\n", sr1);
-        printf("  BUSY        : %u\n", (unsigned int)((sr1 & SR1_BUSY_MASK) != 0));
-        printf("  WEL         : %u\n", (unsigned int)((sr1 & SR1_WEL_MASK) != 0));
-    }
-
-    // Status Register 2
-    printf("\n[Status Register 2 - 35h]\n");
-    printf("  Read result : %s\n", sr2_ok ? "OK" : "FAILED");
-
-    if (sr2_ok) {
-        printf("  SR2         : 0x%02X\n", sr2);
-        printf("  QE          : %u\n", (unsigned int)((sr2 & SR2_QE_MASK) != 0));
-    }
-
-    // Status Register 3
-    printf("\n[Status Register 3 - 15h]\n");
-    printf("  Read result : %s\n", sr3_ok ? "OK" : "FAILED");
-
-    if (sr3_ok) {
-        printf("  SR3         : 0x%02X\n", sr3);
-    }
-
-    printf("\n[Direct Mode]\n");
-    printf("  Stop result : %s\n", stop_ok ? "OK" : "FAILED");
-
-    printf("\n[Read Data - 03h]\n");
-    printf("  Address     : 0x000000\n");
-    printf("  Length      : %u bytes\n", (unsigned)sizeof(flash_data));
-    printf("  Read result : %s\n", flash_read_ok ? "OK" : "FAILED");
-
-    if (flash_read_ok) {
-        for (size_t i = 0; i < sizeof(flash_data); i++) {
-            if (i % 16 == 0) {
-                printf("  %06X      :", (unsigned)i);
-            }
-            printf(" %02X", flash_data[i]);
-
-            if (i % 16 == 15 || i == sizeof(flash_data) - 1) {
-                printf("\n");
-            }
-        }
-    }
-
-    printf("\n========================================\n");
-    printf(" Test completed\n");
-    printf("========================================\n");
 }
