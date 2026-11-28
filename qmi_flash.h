@@ -117,3 +117,4 @@ extern bool qmi_flash_wait_ready(uint32_t timeout_us);
 // エラーコードの非破壊読み出し。
 // 呼び出しによってqmi_lower_errorは変化しない。
 extern int qmi_error(void);
+

@@ -33,66 +33,6 @@ project(qmi_uart C CXX ASM)
 
 pico_sdk_init()
 
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
-
-# Protothread table generator
-set(GEN_TABLE_PY
-    "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_table.py"
-)
-
-# Protothread source files
-set(GEN_TABLE_SRC_FILES
-    pt_qmi_flash.c
-    pt_qmi_floppy.c
-)
-
-set(GENERATED_TABLE_SRCS)
-set(GENERATED_TABLE_HDRS)
-
-foreach(SRC IN LISTS GEN_TABLE_SRC_FILES)
-    get_filename_component(BASE "${SRC}" NAME_WE)
-
-    set(SOURCE_FILE
-        "${CMAKE_CURRENT_SOURCE_DIR}/${SRC}"
-    )
-    set(GENERATED_H
-        "${CMAKE_CURRENT_BINARY_DIR}/${BASE}_table.h"
-    )
-    set(GENERATED_C
-        "${CMAKE_CURRENT_BINARY_DIR}/${BASE}_table.c"
-    )
-
-    if(NOT EXISTS "${SOURCE_FILE}")
-        message(FATAL_ERROR
-            "Protothread source not found: ${SOURCE_FILE}"
-        )
-    endif()
-
-    add_custom_command(
-        OUTPUT
-            "${GENERATED_H}"
-            "${GENERATED_C}"
-        COMMAND
-            "${Python3_EXECUTABLE}"
-            "${GEN_TABLE_PY}"
-            "${SOURCE_FILE}"
-            "${GENERATED_H}"
-            "${GENERATED_C}"
-        DEPENDS
-            "${SOURCE_FILE}"
-            "${GEN_TABLE_PY}"
-        COMMENT "Generating ${BASE}_table.[ch]"
-        VERBATIM
-    )
-
-    list(APPEND GENERATED_TABLE_SRCS
-        "${GENERATED_C}"
-    )
-    list(APPEND GENERATED_TABLE_HDRS
-        "${GENERATED_H}"
-    )
-endforeach()
-
 #
 # 生成専用ターゲット
 #
@@ -106,10 +46,16 @@ add_custom_target(generate_pt_tables
 # Add executable. Default name is the project name, version 0.1
 
 add_executable(qmi_uart qmi_uart.c cmd.c memprt.c support.c
-                pt_qmi_flash.c pt_qmi_floppy.c qmi_flash_test.c
-                qmi_flash.c qmi_flash_sync.c qmi_flash_async.c
+                pt_qmi_flash.c pt_qmi_floppy.c qmi_flash.c 
                 ${GENERATED_TABLE_SRCS})
 
+# Add pt_tables source files
+include(cmake/generate_pt_tables.cmake)
+
+generate_pt_tables(qmi_uart
+    pt_qmi_flash.c
+    pt_qmi_floppy.c
+)
 pico_set_program_name(qmi_uart "qmi_uart")
 pico_set_program_version(qmi_uart "0.1")
 

@@ -105,7 +105,6 @@ static void command_help(void) {
     message("Commands:\n");
     message("  r ADDRESS       Read 4 KiB at Drive A byte offset\n");
     message("  r #ADDRESS      Read 4 KiB at absolute Flash address\n");
-    message("  R ADDRESS       Stable Read (same address rules)\n");
     message("  e ADDRESS       Erase 4 KiB sector\n");
     message("  w ADDRESS       Write buffer to Flash (4 KiB)\n");
     message("  fr DRIVE LBA     Read one floppy sector into sector_buffer\n");
@@ -118,7 +117,6 @@ static void command_help(void) {
     message("  s OFF VALUE     Set one byte in buffer\n");
     message("  h               Show this help\n");
     message("  x               flush debug out\n");
-    message("  y               toggle debug_enable\n");
     message("  c [SEED]        calc CRC-16\n");
     message("  ?               Show this help\n");
     message("\n");
@@ -191,71 +189,7 @@ static bool parse_raw_flash_address(const char *arg,
     return true;
 }
 
-static void command_read(const char *arg, int stable_flag) {
-    uint32_t address;
-    uint64_t time0, time1, time2;
-
-    if (!parse_raw_flash_address(arg, true, &address))
-        return;
-
-    message("Reading Flash 0x%08lX ...\n", (unsigned long)address);
-
-    time0 = time_us_64();
-    if (stable_flag) {
-#if 1
-        // stable mode
-        // use: qmi_flash_read_start_stable
-        //      qmi_flash_read_poll_stalbe
-        if (!qmi_flash_read_start_stable(address, flash_buffer, SECTOR_SIZE)) {
-            print_error("Read start failed\n");
-            return;
-        }
-        time1 = time_us_64();
-
-        while (true) {
-            qmi_flash_poll_result_t result = qmi_flash_read_poll_stable();
-            if (result == QMI_FLASH_POLL_DONE)
-                break;
-            if (result == QMI_FLASH_POLL_ERROR) {
-                print_error("Read failed\n");
-                return;
-            }
-            tight_loop_contents();
-        }
-        time2 = time_us_64();
-        message("time1: %8lld\n", time1 - time0);
-        message("time2: %8lld\n", time2 - time1);
-#else
-        printf_error("read stable not supported");
-#endif
-    } else {
-        // stable mode
-        // use: qmi_flash_read_start_stable
-        //      qmi_flash_read_poll_stalbe
-        if (!qmi_flash_read_start(address, flash_buffer, SECTOR_SIZE)) {
-            print_error("Read start failed\n");
-            return;
-        }
-        time1 = time_us_64();
-
-        while (true) {
-            qmi_flash_poll_result_t result = qmi_flash_read_poll();
-            if (result == QMI_FLASH_POLL_DONE)
-                break;
-            if (result == QMI_FLASH_POLL_ERROR) {
-                print_error("Read failed\n");
-                return;
-            }
-            tight_loop_contents();
-        }
-        time2 = time_us_64();
-        message("time1: %8lld\n", time1 - time0);
-        message("time2: %8lld\n", time2 - time1);
-    }
-    message("Read completed.\n");
-}
-
-static void command_read_test(const char *arg, int async_flag) {
+static void command_read(const char *arg, int async_flag) {
     uint32_t address;
     uint32_t offset;
     uint32_t time0, time1, time2;
@@ -283,51 +217,7 @@ static void command_read_test(const char *arg, int async_flag) {
 // Erase
 // ------------------------------------------------------------
 
-static void command_erase(const char *arg, int async_flag) {
-    uint32_t address;
-    uint64_t time0, time1, time2;
-
-    if (!parse_raw_flash_address(arg, false, &address))
-        return;
-
-    message("Erasing sector at 0x%08lX ...\n", (unsigned long)address);
-
-    time0 = time_us_64();
-    if (async_flag) {
-        if (!qmi_flash_erase_4k_start(address)) {
-            print_error("Erase start failed\n");
-            return;
-        }
-        time1 = time_us_64();
-        while (true) {
-            qmi_flash_poll_result_t result = qmi_flash_erase_4k_poll();
-
-            if (result == QMI_FLASH_POLL_DONE)
-                break;
-
-            if (result == QMI_FLASH_POLL_ERROR) {
-                print_error("Erase failed or timed out\n");
-                return;
-            }
-
-            tight_loop_contents();
-        }
-        time2 = time_us_64();
-        message("time1: %8lld\n", time1 - time0);
-        message("time2: %8lld\n", time2 - time0);
-
-    } else {
-        if (!qmi_flash_erase_4k(address)) {
-            print_error("Flash erase failed");
-            return;
-        }
-        time2 = time_us_64();
-        message("time1: %8lld\n", time1 - time0);
-    }
-    message("Erase completed.\n");
-}
-
-static void command_erase_test(const char *arg) {
+static void command_erase(const char *arg) {
     uint32_t address;
     uint32_t time0, time1, time2;
 
@@ -362,51 +252,6 @@ static void command_erase_test(const char *arg) {
 // ------------------------------------------------------------
 
 static void command_write(const char *arg, int async_flag) {
-    uint32_t address;
-    uint32_t offset;
-    uint64_t time0, time1, time2;
-
-    if (!parse_raw_flash_address(arg, false, &address))
-        return;
-
-    message("Writing buffer to Flash 0x%08lX ...\n", (unsigned long)address);
-    // Page Program must not cross a 256-byte page boundary.
-    time0 = time_us_64();
-    for (offset = 0; offset < SECTOR_SIZE; offset += PAGE_SIZE) {
-        if (async_flag) {
-            if (!qmi_flash_program_start(address + offset, &flash_buffer[offset], PAGE_SIZE)) {
-                print_error("Write start failed\n");
-                return;
-            }
-            time1 = time_us_64();
-            while (true) {
-                qmi_flash_poll_result_t result = qmi_flash_program_poll();
-
-                if (result == QMI_FLASH_POLL_DONE)
-                    break;
-
-                if (result == QMI_FLASH_POLL_ERROR) {
-                    print_error("Write failed or timed out\n");
-                    return;
-                }
-                // message("time1: %8lld\n", time1 - time0);
-                tight_loop_contents();
-            }
-            time2 = time_us_64();
-            message("time2: %8lld\n", time2 - time1);
-        } else {
-            if (!qmi_flash_program_page(address + offset, &flash_buffer[offset], PAGE_SIZE)) {
-                message("ERROR: Write failed at 0x%08lX\n", (unsigned long)(address + offset));
-                return;
-            }
-            time2 = time_us_64();
-            message("time2: %8lld\n", time2 - time0);
-        }
-    }
-    message("Write completed.\n");
-}
-
-static void command_write_test(const char *arg, int async_flag) {
     uint32_t address;
     uint32_t offset;
     uint64_t time0, time1, time2;
@@ -701,48 +546,18 @@ static void execute_command(char *line) {
             return;
         }
         command_read(argv[1], false);
-    } else if (strcmp(argv[0], "rr") == 0) {
-        if (argc != 2) {
-            print_error("Usage: rr ADDRESS");
-            return;
-        }
-        command_read_test(argv[1], false);
-    } else if (strcmp(argv[0], "R") == 0) {
-        if (argc != 2) {
-            print_error("Usage: R ADDRESS");
-            return;
-        }
-        command_read(argv[1], true);
     } else if (strcmp(argv[0], "e") == 0) {
         if (argc != 2) {
             print_error("Usage: e ADDRESS");
             return;
         }
-        command_erase(argv[1], true);
-    } else if (strcmp(argv[0], "ee") == 0) {
-        if (argc != 2) {
-            print_error("Usage: ee ADDRESS");
-            return;
-        }
-        command_erase_test(argv[1]);
-    } else if (strcmp(argv[0], "E") == 0) {
-        if (argc != 2) {
-            print_error("Usage: e ADDRESS");
-            return;
-        }
-        command_erase(argv[1], false);
+        command_erase(argv[1]);
     } else if (strcmp(argv[0], "w") == 0) {
         if (argc != 2) {
             print_error("Usage: w ADDRESS");
             return;
         }
         command_write(argv[1], true);
-    } else if (strcmp(argv[0], "ww") == 0) {
-        if (argc != 2) {
-            print_error("Usage: ww ADDRESS");
-            return;
-        }
-        command_write_test(argv[1], true);
     } else if (strcmp(argv[0], "df") == 0) {
         if (argc > 3) {
             print_error("Usage: df [OFFSET [LENGTH]]");
@@ -794,8 +609,6 @@ static void execute_command(char *line) {
         }
     } else if (strcmp(argv[0], "c") == 0) {
         command_crc16(argc >= 2 ? argv[1] : NULL);
-    } else if (strcmp(argv[0], "y") == 0) {
-        message("toggle debug_error: %s\n", toggle_debug_error() ? "true" : "false");
     } else {
         print_error("Unknown command");
     }

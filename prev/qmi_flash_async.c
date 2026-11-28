@@ -222,7 +222,7 @@ static void program_debug_error(const char *reason) {
 //
 // debug_error ... DUMMY_ERROR_OCCUR forses to change the state to ERROR
 //
-bool dummy_error_enable = false;
+static bool dummy_error_enable = false;
 
 void DUMMY_ERROR_OCCUR(void) {
     if (dummy_error_enable) {

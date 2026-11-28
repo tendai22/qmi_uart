@@ -427,3 +427,4 @@ bool qmi_flash_wait_ready(uint32_t timeout_us) {
     qmi_lower_error = QMI_ERR_TIMEOUT;
     return false;
 }
+
