@@ -152,6 +152,11 @@ extern bool qmi_direct_mode_start(void) {
     // Direct Mode 有効化時点ですでに進行中だった XIP 転送が
     // 完了するのを待つ。
     if (!qmi_wait_not_busy()) {
+        // Direct Mode を解除する。
+        qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_EN_BITS;
+        // Direct Modeを解除する。
+        qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_EN_BITS;
+
         qmi_lower_error = QMI_ERR_TIMEOUT;
         return false;
     }
@@ -161,13 +166,15 @@ extern bool qmi_direct_mode_start(void) {
 
 extern bool qmi_direct_mode_stop(void) {
     // 転送完了を待つ。
-    if (!qmi_wait_not_busy()) {
-        return false;
-    }
+    bool wait_ok = qmi_wait_not_busy();
+    // qmi_wait_not_ready()成功・失敗にかかわらず
+    // CS0N/EN bit を解除する。
     // CS0 を High に戻す（ASSERT_CS0N をクリア）。
     qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_ASSERT_CS0N_BITS;
     // Direct Mode を解除する。
     qmi_hw->direct_csr &= ~QMI_DIRECT_CSR_EN_BITS;
+    if (!wait_ok)
+        return false;
     qmi_lower_error = 0;
     return true;
 }
