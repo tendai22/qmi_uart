@@ -37,17 +37,10 @@ pico_sdk_init()
 # 生成専用ターゲット
 #
 
-add_custom_target(generate_pt_tables
-    DEPENDS
-        ${GENERATED_TABLE_SRCS}
-        ${GENERATED_TABLE_HDRS}
-)
-
 # Add executable. Default name is the project name, version 0.1
 
 add_executable(qmi_uart qmi_uart.c cmd.c memprt.c support.c
-                pt_qmi_flash.c pt_qmi_floppy.c qmi_flash.c 
-                ${GENERATED_TABLE_SRCS})
+                pt_qmi_flash.c pt_qmi_floppy.c qmi_flash.c )
 
 # Add pt_tables source files
 include(cmake/generate_pt_tables.cmake)
@@ -68,16 +61,7 @@ pico_enable_stdio_usb(qmi_uart 0)
 
 # Add the standard include files to the build
 target_include_directories(qmi_uart PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_CURRENT_BINARY_DIR}
-        ${CMAKE_CURRENT_LIST_DIR}
-)
-
-#
-# 先に生成
-#
-
-add_dependencies(qmi_uart generate_pt_tables)
+        ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Add the standard library to the build
 target_link_libraries(qmi_uart

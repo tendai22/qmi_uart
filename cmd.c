@@ -18,8 +18,6 @@
 #include "conf.h"
 #include "memprt.h"
 #include "qmi_flash.h"
-#include "qmi_flash_async.h"
-#include "qmi_flash_sync.h"
 #include "support.h"
 
 #include "protothread.h"
